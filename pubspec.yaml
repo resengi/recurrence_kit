@@ -1,0 +1,22 @@
+name: {{ package.name }}
+
+description: TODO - Change this - Boilerplate code for setting up a Flutter package.
+
+version: 0.1.2
+
+homepage: https://github.com/resengi/{{ package.name }}
+repository: https://github.com/resengi/{{ package.name }}
+issue_tracker: https://github.com/resengi/{{ package.name }}/issues
+
+environment:
+  sdk: ^3.10.1
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
