@@ -1,5 +1,5 @@
-name: {{ package.name }}_example
-description: Example app demonstrating the {{ package.name }} package.
+name: recurrence_kit_example
+description: Example app demonstrating the recurrence_kit package.
 publish_to: none
 
 environment:
@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  {{ package.name }}:
+  recurrence_kit:
     path: ../
 
 dev_dependencies:
