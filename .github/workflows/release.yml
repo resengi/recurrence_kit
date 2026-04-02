@@ -13,7 +13,7 @@ env:
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: /usr/local/flutter
   GIT_CONFIG_KEY_1: safe.directory
-  GIT_CONFIG_VALUE_1: /__w/{{ package.name }}/{{ package.name }}
+  GIT_CONFIG_VALUE_1: /__w/recurrence_kit/recurrence_kit
 
 permissions:
   contents: write

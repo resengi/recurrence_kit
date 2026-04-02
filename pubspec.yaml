@@ -1,12 +1,12 @@
-name: {{ package.name }}
+name: recurrence_kit
 
-description: TODO - Change this - Boilerplate code for setting up a Flutter package.
+description: A standalone recurrence rule system with data models, computation engine, and picker UI widget.
 
-version: 0.1.2
+version: 0.1.0
 
-homepage: https://github.com/resengi/{{ package.name }}
-repository: https://github.com/resengi/{{ package.name }}
-issue_tracker: https://github.com/resengi/{{ package.name }}/issues
+homepage: https://github.com/resengi/recurrence_kit
+repository: https://github.com/resengi/recurrence_kit
+issue_tracker: https://github.com/resengi/recurrence_kit/issues
 
 environment:
   sdk: ^3.10.1
@@ -15,6 +15,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  intl: ^0.20.2
 
 dev_dependencies:
   flutter_test:
