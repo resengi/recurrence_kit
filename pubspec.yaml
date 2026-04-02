@@ -2,7 +2,7 @@ name: recurrence_kit
 
 description: A standalone recurrence rule system with data models, computation engine, and picker UI widget.
 
-version: 0.1.0
+version: 0.1.1
 
 homepage: https://github.com/resengi/recurrence_kit
 repository: https://github.com/resengi/recurrence_kit
