@@ -1,21 +1,18 @@
-/// A standalone recurrence rule system — data models, computation engine,
-/// and a configurable picker UI widget.
-///
-/// ## Quick start
+/// A recurrence rule system for Flutter: immutable rule types, a
+/// computation engine, and a configurable picker widget.
 ///
 /// ```dart
 /// import 'package:recurrence_kit/recurrence_kit.dart';
 ///
-/// // Create a rule
 /// final rule = RecurrenceRule(
-///   type: RecurrenceType.weekly,
-///   daysOfWeek: [1, 3, 5],
+///   pattern: Weekly(weekdays: [DateTime.monday, DateTime.wednesday]),
+///   end: EndsAfterCount(10),
 /// );
 ///
-/// // Check if a date matches
+/// // Does the schedule occur on a date?
 /// RecurrenceEngine.occursOnDate(rule, someDate, startDate);
 ///
-/// // Full picker widget
+/// // Inline editor
 /// RecurrencePicker(
 ///   rule: rule,
 ///   onChanged: (updated) => setState(() => _rule = updated),
@@ -23,18 +20,17 @@
 /// )
 /// ```
 ///
-/// ## What's included
-///
-/// - **Models**: [RecurrenceRule], [RecurrenceType], [RecurrenceEndType] —
-///   immutable data with JSON serialization.
-/// - **Engine**: [RecurrenceEngine] — pure, stateless occurrence logic.
-/// - **Widget**: [RecurrencePicker] — a configurable inline editor for
-///   building recurrence rules, themed via [RecurrencePickerTheme].
+/// - **Model**: [RecurrenceRule], the sealed [RecurrencePattern] variants
+///   ([Daily], [Weekly], [MonthlyByDay], [MonthlyByWeekday], [Yearly]) with
+///   their [WeekPosition] and [MissingDay] options, and the sealed
+///   [RecurrenceEnd] variants ([NeverEnds], [EndsOnDate], [EndsAfterCount]),
+///   with JSON serialization on the rule.
+/// - **Engine**: [RecurrenceEngine], pure stateless occurrence queries.
+/// - **Widget**: [RecurrencePicker], themed via [RecurrencePickerTheme].
 library;
 
-export 'src/recurrence_end_type.dart';
 export 'src/recurrence_engine.dart';
+export 'src/recurrence_model.dart';
 export 'src/recurrence_picker.dart';
 export 'src/recurrence_picker_theme.dart';
 export 'src/recurrence_rule.dart';
-export 'src/recurrence_type.dart';

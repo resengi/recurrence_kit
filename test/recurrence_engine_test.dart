@@ -1,796 +1,815 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:recurrence_kit/recurrence_kit.dart';
 
+/// Armed by `--dart-define=EXPECT_DST_TZ=true` on the DST-observing CI leg.
+const bool _expectDstTz = bool.fromEnvironment('EXPECT_DST_TZ');
+
+RecurrenceRule _rule(
+  RecurrencePattern pattern, {
+  RecurrenceEnd end = const NeverEnds(),
+  bool includeStartDate = false,
+}) => RecurrenceRule(
+  pattern: pattern,
+  end: end,
+  includeStartDate: includeStartDate,
+);
+
+DateTime _d(int year, int month, int day) => DateTime(year, month, day);
+
+List<DateTime> _next(
+  RecurrenceRule rule,
+  DateTime start,
+  int count, {
+  DateTime? from,
+}) =>
+    RecurrenceEngine.nextOccurrences(rule, start, from ?? start, count: count);
+
 void main() {
-  // ── occursOnDate — daily ───────────────────────────────────────────────
-
-  group('occursOnDate — daily', () {
-    test('interval 1 matches every day from start', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
+  group('inputs and outputs are calendar dates', () {
+    test('time-of-day and UTC flag on inputs are ignored', () {
+      final rule = _rule(Daily());
+      final start = DateTime.utc(2025, 1, 1, 23, 59);
       expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 1), start),
+        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 3, 8), start),
         isTrue,
       );
       expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 2), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 10), start),
-        isTrue,
+        RecurrenceEngine.nextOccurrenceOnOrAfter(
+          rule,
+          start,
+          DateTime(2025, 1, 3, 17, 45),
+        ),
+        _d(2025, 1, 3),
       );
     });
 
-    test('interval 3 matches every 3rd day', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 3);
-      final start = DateTime(2025, 1, 1);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 1), start),
-        isTrue,
+    test('returned dates are local midnight', () {
+      final next = RecurrenceEngine.nextOccurrenceOnOrAfter(
+        _rule(Daily()),
+        DateTime(2025, 1, 1, 9),
+        DateTime(2025, 1, 1, 9),
       );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 4), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 7), start),
-        isTrue,
-      );
-    });
-
-    test('non-matching interval day returns false', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 3);
-      final start = DateTime(2025, 1, 1);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 2), start),
-        isFalse,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 3), start),
-        isFalse,
-      );
+      expect(next, _d(2025, 1, 1));
+      expect(next!.isUtc, isFalse);
     });
   });
 
-  // ── occursOnDate — weekly ──────────────────────────────────────────────
-
-  group('occursOnDate — weekly', () {
-    test('day in daysOfWeek matches', () {
-      // Monday and Friday.
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        daysOfWeek: [1, 5],
-      );
-      final start = DateTime(2025, 1, 6); // Monday
-      // Jan 6 2025 = Monday
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 6), start),
-        isTrue,
-      );
-      // Jan 10 2025 = Friday
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 10), start),
-        isTrue,
-      );
-    });
-
-    test('day not in set returns false', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        daysOfWeek: [1, 5],
-      );
-      final start = DateTime(2025, 1, 6);
-      // Jan 7 2025 = Tuesday
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 7), start),
-        isFalse,
-      );
-    });
-
-    test('empty daysOfWeek always returns false', () {
-      final rule = RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: []);
-      final start = DateTime(2025, 1, 6);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 6), start),
-        isFalse,
-      );
-    });
-
-    test('null daysOfWeek returns false', () {
-      final rule = RecurrenceRule(type: RecurrenceType.weekly);
-      final start = DateTime(2025, 1, 6);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 6), start),
-        isFalse,
-      );
-    });
-
-    test('interval 2 matches every other week', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        interval: 2,
-        daysOfWeek: [1], // Monday
-      );
-      final start = DateTime(2025, 1, 6); // Monday, week 0
-      // Week 0 Monday — matches
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 6), start),
-        isTrue,
-      );
-      // Week 1 Monday — skipped
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 13), start),
-        isFalse,
-      );
-      // Week 2 Monday — matches
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 20), start),
-        isTrue,
-      );
-    });
-  });
-
-  // ── occursOnDate — monthly fixed ───────────────────────────────────────
-
-  group('occursOnDate — monthly fixed', () {
-    test('basic match on monthDay', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 15);
-      final start = DateTime(2025, 1, 15);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 15), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 15), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 3, 15), start),
-        isTrue,
-      );
-    });
-
-    test('wrong day returns false', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 15);
-      final start = DateTime(2025, 1, 15);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 14), start),
-        isFalse,
-      );
-    });
-
-    test('interval 2 skips alternate months', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        interval: 2,
-        monthDay: 10,
-      );
-      final start = DateTime(2025, 1, 10);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 10), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 10), start),
-        isFalse,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 3, 10), start),
-        isTrue,
-      );
-    });
-
-    test('monthDay 31 in 30-day month falls back to 30th', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 31);
-      final start = DateTime(2025, 1, 31);
-      // April has 30 days — should match on the 30th.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 4, 30), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 4, 29), start),
-        isFalse,
-      );
-    });
-
-    test('monthDay 29 in Feb non-leap falls back to 28th', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 29);
-      final start = DateTime(2025, 1, 29);
-      // 2025 is not a leap year — Feb has 28 days.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 28), start),
-        isTrue,
-      );
-    });
-
-    test('monthDay 29 in Feb leap year matches 29th', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 29);
-      final start = DateTime(2024, 1, 29);
-      // 2024 is a leap year.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2024, 2, 29), start),
-        isTrue,
-      );
-    });
-  });
-
-  // ── occursOnDate — monthly relative ────────────────────────────────────
-
-  group('occursOnDate — monthly relative', () {
-    test('2nd Tuesday matches correct date', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 2,
-        dayOfWeek: 2, // Tuesday
-      );
-      final start = DateTime(2025, 1, 14); // 2nd Tuesday of Jan 2025
-      // Feb 2025: 2nd Tuesday = Feb 11
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 11), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 4), start),
-        isFalse,
-      );
-    });
-
-    test('last Friday (weekOfMonth=5) matches final Friday', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 5,
-        dayOfWeek: 5, // Friday
-      );
-      final start = DateTime(2025, 1, 31); // Last Friday of Jan 2025
-      // Feb 2025: last Friday = Feb 28
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 28), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 21), start),
-        isFalse,
-      );
-    });
-
-    test('wrong weekday returns false', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 2,
-        dayOfWeek: 2, // Tuesday
-      );
-      final start = DateTime(2025, 1, 14);
-      // Jan 15 2025 is Wednesday, not Tuesday
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 15), start),
-        isFalse,
-      );
-    });
-
-    test('weekOfMonth=5 with 5 occurrences of a weekday matches the 5th', () {
-      // October 2025 has 5 Fridays: 3, 10, 17, 24, 31
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 5,
-        dayOfWeek: 5, // Friday
-      );
-      final start = DateTime(2025, 1, 31);
-      // The last Friday = Oct 31
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 10, 31), start),
-        isTrue,
-      );
-      // The 4th Friday (Oct 24) is not the last
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 10, 24), start),
-        isFalse,
-      );
-    });
-  });
-
-  // ── occursOnDate — yearly ──────────────────────────────────────────────
-
-  group('occursOnDate — yearly', () {
-    test('basic month + day match', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 3,
-        monthDay: 14,
-      );
-      final start = DateTime(2025, 3, 14);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 3, 14), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2026, 3, 14), start),
-        isTrue,
-      );
-    });
-
-    test('wrong month returns false', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 3,
-        monthDay: 14,
-      );
-      final start = DateTime(2025, 3, 14);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 4, 14), start),
-        isFalse,
-      );
-    });
-
-    test('interval 2 skips alternate years', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        interval: 2,
-        monthOfYear: 7,
-        monthDay: 4,
-      );
-      final start = DateTime(2025, 7, 4);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 7, 4), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2026, 7, 4), start),
-        isFalse,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2027, 7, 4), start),
-        isTrue,
-      );
-    });
-
-    test('Feb 29 in non-leap year falls back to Feb 28', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 2,
-        monthDay: 29,
-      );
-      final start = DateTime(2024, 2, 29);
-      // 2025 is not a leap year.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 28), start),
-        isTrue,
-      );
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 2, 27), start),
-        isFalse,
-      );
-    });
-
-    test('missing monthOfYear or monthDay returns false', () {
-      final ruleNoMonth = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthDay: 14,
-      );
-      final ruleNoDay = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 3,
-      );
-      final start = DateTime(2025, 3, 14);
+  group('daily', () {
+    test('every N days from the start date', () {
+      expect(_next(_rule(Daily(interval: 3)), _d(2025, 1, 1), 3), [
+        _d(2025, 1, 1),
+        _d(2025, 1, 4),
+        _d(2025, 1, 7),
+      ]);
       expect(
         RecurrenceEngine.occursOnDate(
-          ruleNoMonth,
-          DateTime(2025, 3, 14),
-          start,
+          _rule(Daily(interval: 3)),
+          _d(2025, 1, 5),
+          _d(2025, 1, 1),
         ),
         isFalse,
       );
       expect(
-        RecurrenceEngine.occursOnDate(ruleNoDay, DateTime(2025, 3, 14), start),
-        isFalse,
-      );
-    });
-  });
-
-  // ── occursOnDate — boundaries ──────────────────────────────────────────
-
-  group('occursOnDate — boundaries', () {
-    test('date == startDate returns true', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
-      expect(RecurrenceEngine.occursOnDate(rule, start, start), isTrue);
-    });
-
-    test('date == endDate returns true (inclusive)', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.daily,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 1, 10),
-      );
-      final start = DateTime(2025, 1, 1);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 10), start),
-        isTrue,
-      );
-    });
-
-    test('one day before startDate returns false', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 5);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 4), start),
-        isFalse,
-      );
-    });
-
-    test('one day after endDate returns false', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.daily,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 1, 10),
-      );
-      final start = DateTime(2025, 1, 1);
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 11), start),
-        isFalse,
-      );
-    });
-
-    test('null endDate means no upper bound', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
-      // Far future date.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2030, 6, 15), start),
-        isTrue,
-      );
-    });
-  });
-
-  // ── occursOnDate — time normalization ──────────────────────────────────
-
-  group('occursOnDate — time normalization', () {
-    test('non-midnight times still match correctly', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 2);
-      final start = DateTime(2025, 1, 1, 14, 30);
-      // Day 0 with time component — should match.
-      expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 1, 8, 0), start),
-        isTrue,
-      );
-      // Day 2 with time component — should match.
-      expect(
-        RecurrenceEngine.occursOnDate(
-          rule,
-          DateTime(2025, 1, 3, 23, 59),
-          start,
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          _rule(Daily(interval: 3)),
+          _d(2025, 1, 1),
+          _d(2025, 1, 6),
         ),
-        isTrue,
+        _d(2025, 1, 4),
       );
-      // Day 1 — should not match.
+    });
+  });
+
+  group('weekly', () {
+    test('weeks are Monday-based and aligned to the start week', () {
+      // 2025-01-01 is a Wednesday; its week is Mon Dec 30 – Sun Jan 5.
+      final rule = _rule(Weekly(interval: 2, weekdays: [DateTime.friday]));
+      final start = _d(2025, 1, 1);
+      expect(_next(rule, start, 3), [
+        _d(2025, 1, 3),
+        _d(2025, 1, 17),
+        _d(2025, 1, 31),
+      ]);
       expect(
-        RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 2, 12, 0), start),
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 1, 10), start),
+        isFalse,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 1, 30),
+        ),
+        _d(2025, 1, 17),
+      );
+    });
+
+    test('several weekdays in ascending order within each aligned week', () {
+      final rule = _rule(
+        Weekly(interval: 2, weekdays: [DateTime.monday, DateTime.friday]),
+      );
+      expect(_next(rule, _d(2025, 1, 1), 4), [
+        _d(2025, 1, 3),
+        _d(2025, 1, 13),
+        _d(2025, 1, 17),
+        _d(2025, 1, 27),
+      ]);
+    });
+
+    test('a start date on a selected weekday is the first occurrence', () {
+      final rule = _rule(Weekly(weekdays: [DateTime.friday]));
+      expect(_next(rule, _d(2025, 1, 10), 2), [
+        _d(2025, 1, 10),
+        _d(2025, 1, 17),
+      ]);
+    });
+  });
+
+  group('monthly by day', () {
+    test('day 31 with useLastDay lands on every month\'s last day', () {
+      expect(_next(_rule(MonthlyByDay(day: 31)), _d(2025, 1, 31), 4), [
+        _d(2025, 1, 31),
+        _d(2025, 2, 28),
+        _d(2025, 3, 31),
+        _d(2025, 4, 30),
+      ]);
+    });
+
+    test('day 31 with skip produces nothing in shorter months', () {
+      final rule = _rule(MonthlyByDay(day: 31, missingDay: MissingDay.skip));
+      expect(
+        RecurrenceEngine.occurrencesInRange(
+          rule,
+          _d(2025, 1, 31),
+          _d(2025, 1, 1),
+          _d(2025, 12, 31),
+        ),
+        [
+          _d(2025, 1, 31),
+          _d(2025, 3, 31),
+          _d(2025, 5, 31),
+          _d(2025, 7, 31),
+          _d(2025, 8, 31),
+          _d(2025, 10, 31),
+          _d(2025, 12, 31),
+        ],
+      );
+      expect(
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 4, 30), _d(2025, 1, 31)),
         isFalse,
       );
     });
-  });
 
-  // ── nextOccurrences ────────────────────────────────────────────────────
-
-  group('nextOccurrences', () {
-    test('returns requested count for unbounded rule', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 3,
+    test('day 30 in both modes', () {
+      expect(_next(_rule(MonthlyByDay(day: 30)), _d(2025, 1, 30), 3), [
+        _d(2025, 1, 30),
+        _d(2025, 2, 28),
+        _d(2025, 3, 30),
+      ]);
+      expect(
+        _next(
+          _rule(MonthlyByDay(day: 30, missingDay: MissingDay.skip)),
+          _d(2025, 1, 30),
+          3,
+        ),
+        [_d(2025, 1, 30), _d(2025, 3, 30), _d(2025, 4, 30)],
       );
-      expect(results, [
-        DateTime(2025, 1, 2),
-        DateTime(2025, 1, 3),
-        DateTime(2025, 1, 4),
+    });
+
+    test('day 29 in both modes across leap and non-leap Februaries', () {
+      expect(_next(_rule(MonthlyByDay(day: 29)), _d(2025, 1, 29), 3), [
+        _d(2025, 1, 29),
+        _d(2025, 2, 28),
+        _d(2025, 3, 29),
+      ]);
+      final skip = _rule(MonthlyByDay(day: 29, missingDay: MissingDay.skip));
+      expect(_next(skip, _d(2025, 1, 29), 3), [
+        _d(2025, 1, 29),
+        _d(2025, 3, 29),
+        _d(2025, 4, 29),
+      ]);
+      expect(_next(skip, _d(2024, 1, 29), 3), [
+        _d(2024, 1, 29),
+        _d(2024, 2, 29),
+        _d(2024, 3, 29),
       ]);
     });
 
-    test('stops early when endDate is reached', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.daily,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 1, 3),
-      );
-      final start = DateTime(2025, 1, 1);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 10,
-      );
-      expect(results, [DateTime(2025, 1, 2), DateTime(2025, 1, 3)]);
-    });
-
-    test('weekly rule skips non-selected days', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        daysOfWeek: [1, 5], // Monday, Friday
-      );
-      final start = DateTime(2025, 1, 6); // Monday
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 3,
-      );
-      expect(results, [
-        DateTime(2025, 1, 10), // Friday
-        DateTime(2025, 1, 13), // Monday
-        DateTime(2025, 1, 17), // Friday
+    test('a start date after the target day begins in the next month', () {
+      expect(_next(_rule(MonthlyByDay(day: 15)), _d(2025, 1, 20), 2), [
+        _d(2025, 2, 15),
+        _d(2025, 3, 15),
       ]);
     });
 
-    test('daily rule returns consecutive days', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 1);
-      final start = DateTime(2025, 3, 1);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        DateTime(2025, 3, 5),
-        count: 3,
-      );
-      expect(results, [
-        DateTime(2025, 3, 6),
-        DateTime(2025, 3, 7),
-        DateTime(2025, 3, 8),
+    test('intervals are aligned to the start month', () {
+      final rule = _rule(MonthlyByDay(interval: 3, day: 10));
+      expect(_next(rule, _d(2025, 1, 5), 3), [
+        _d(2025, 1, 10),
+        _d(2025, 4, 10),
+        _d(2025, 7, 10),
       ]);
+      expect(
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 2, 10), _d(2025, 1, 5)),
+        isFalse,
+      );
     });
 
-    test('yearly rule returns occurrences across multiple years', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 6,
-        monthDay: 15,
+    test('day 29 with skip every 12 months from February', () {
+      final rule = _rule(
+        MonthlyByDay(interval: 12, day: 29, missingDay: MissingDay.skip),
       );
-      final start = DateTime(2025, 6, 15);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 5,
-      );
-      expect(results, [
-        DateTime(2026, 6, 15),
-        DateTime(2027, 6, 15),
-        DateTime(2028, 6, 15),
-        DateTime(2029, 6, 15),
-        DateTime(2030, 6, 15),
+      expect(_next(rule, _d(2023, 2, 1), 3), [
+        _d(2024, 2, 29),
+        _d(2028, 2, 29),
+        _d(2032, 2, 29),
       ]);
     });
   });
 
-  // ── computeEndDateFromCount ────────────────────────────────────────────
-
-  group('computeEndDateFromCount', () {
-    test('count 1 for daily rule returns start date', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
-      expect(RecurrenceEngine.computeEndDateFromCount(rule, start, 1), start);
-    });
-
-    test('count 10 for weekly rule returns 10th occurrence', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        daysOfWeek: [1], // Monday only
+  group('monthly by weekday', () {
+    test('last Friday', () {
+      final rule = _rule(
+        MonthlyByWeekday(position: WeekPosition.last, weekday: DateTime.friday),
       );
-      final start = DateTime(2025, 1, 6); // Monday
-      // 10th Monday from Jan 6 = March 10
-      final result = RecurrenceEngine.computeEndDateFromCount(rule, start, 10);
-      expect(result, DateTime(2025, 3, 10));
+      expect(_next(rule, _d(2025, 1, 1), 5), [
+        _d(2025, 1, 31),
+        _d(2025, 2, 28),
+        _d(2025, 3, 28),
+        _d(2025, 4, 25),
+        _d(2025, 5, 30),
+      ]);
     });
 
-    test('count < 1 returns null', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
-      expect(RecurrenceEngine.computeEndDateFromCount(rule, start, 0), isNull);
-      expect(RecurrenceEngine.computeEndDateFromCount(rule, start, -1), isNull);
-    });
-
-    test('ignores existing endDate on the rule', () {
-      // Rule has a restrictive endDate of Jan 5, but we ask for 10 occurrences.
-      final rule = RecurrenceRule(
-        type: RecurrenceType.daily,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 1, 5),
+    test('fourth Friday differs from the last in five-Friday months', () {
+      final rule = _rule(
+        MonthlyByWeekday(
+          position: WeekPosition.fourth,
+          weekday: DateTime.friday,
+        ),
       );
-      final start = DateTime(2025, 1, 1);
-      // Should still return the 10th day, ignoring the endDate.
+      expect(_next(rule, _d(2025, 1, 1), 5), [
+        _d(2025, 1, 24),
+        _d(2025, 2, 28),
+        _d(2025, 3, 28),
+        _d(2025, 4, 25),
+        _d(2025, 5, 23),
+      ]);
+    });
+
+    test('first Monday every 2 months', () {
+      final rule = _rule(
+        MonthlyByWeekday(
+          interval: 2,
+          position: WeekPosition.first,
+          weekday: DateTime.monday,
+        ),
+      );
+      expect(_next(rule, _d(2025, 1, 10), 3), [
+        _d(2025, 3, 3),
+        _d(2025, 5, 5),
+        _d(2025, 7, 7),
+      ]);
+    });
+  });
+
+  group('yearly', () {
+    test('February 29 with useLastDay falls on Feb 28 in non-leap years', () {
+      expect(_next(_rule(Yearly(month: 2, day: 29)), _d(2024, 2, 29), 3), [
+        _d(2024, 2, 29),
+        _d(2025, 2, 28),
+        _d(2026, 2, 28),
+      ]);
+    });
+
+    test('February 29 with skip falls only in leap years', () {
+      final rule = _rule(
+        Yearly(month: 2, day: 29, missingDay: MissingDay.skip),
+      );
+      expect(_next(rule, _d(2024, 2, 29), 3), [
+        _d(2024, 2, 29),
+        _d(2028, 2, 29),
+        _d(2032, 2, 29),
+      ]);
       expect(
-        RecurrenceEngine.computeEndDateFromCount(rule, start, 10),
-        DateTime(2025, 1, 10),
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 2, 28), _d(2024, 2, 29)),
+        isFalse,
       );
     });
 
-    test('maxCount returns null when count exceeds it', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
+    test('February 29 every 4 years skips the century year 2100', () {
+      final rule = _rule(
+        Yearly(interval: 4, month: 2, day: 29, missingDay: MissingDay.skip),
+      );
+      expect(_next(rule, _d(2096, 2, 29), 2), [
+        _d(2096, 2, 29),
+        _d(2104, 2, 29),
+      ]);
       expect(
-        RecurrenceEngine.computeEndDateFromCount(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
           rule,
-          start,
-          500,
-          maxCount: 100,
+          _d(2096, 2, 29),
+          _d(2103, 12, 31),
+        ),
+        _d(2096, 2, 29),
+      );
+    });
+
+    test(
+      'February 29 every 100 years lands only in years divisible by 400',
+      () {
+        final rule = _rule(
+          Yearly(interval: 100, month: 2, day: 29, missingDay: MissingDay.skip),
+        );
+        expect(_next(rule, _d(2000, 2, 29), 2), [
+          _d(2000, 2, 29),
+          _d(2400, 2, 29),
+        ]);
+        expect(
+          RecurrenceEngine.nextOccurrenceOnOrAfter(
+            rule,
+            _d(2000, 2, 29),
+            _d(2000, 3, 1),
+          ),
+          _d(2400, 2, 29),
+        );
+      },
+    );
+
+    test(
+      'a start date after the target day begins in the next aligned year',
+      () {
+        expect(
+          _next(
+            _rule(Yearly(interval: 2, month: 6, day: 15)),
+            _d(2024, 7, 1),
+            2,
+          ),
+          [_d(2026, 6, 15), _d(2028, 6, 15)],
+        );
+      },
+    );
+  });
+
+  group('rules that never match', () {
+    final monthly = _rule(
+      MonthlyByDay(interval: 12, day: 30, missingDay: MissingDay.skip),
+    );
+    final monthlyStart = _d(2025, 2, 1);
+    final yearly = _rule(
+      Yearly(interval: 100, month: 2, day: 29, missingDay: MissingDay.skip),
+    );
+    final yearlyStart = _d(2001, 1, 1);
+
+    test('every query is empty', () {
+      for (final (rule, start) in [
+        (monthly, monthlyStart),
+        (yearly, yearlyStart),
+      ]) {
+        expect(RecurrenceEngine.occursOnDate(rule, start, start), isFalse);
+        expect(
+          RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, start),
+          isNull,
+        );
+        expect(
+          RecurrenceEngine.previousOccurrenceOnOrBefore(
+            rule,
+            start,
+            _d(2500, 1, 1),
+          ),
+          isNull,
+        );
+        expect(
+          RecurrenceEngine.occurrencesInRange(
+            rule,
+            start,
+            start,
+            _d(2035, 1, 1),
+          ),
+          isEmpty,
+        );
+        expect(_next(rule, start, 3), isEmpty);
+        expect(RecurrenceEngine.lastOccurrence(rule, start), isNull);
+      }
+    });
+
+    test('day 29 every 24 months from an odd-year February never lands', () {
+      final rule = _rule(
+        MonthlyByDay(interval: 24, day: 29, missingDay: MissingDay.skip),
+      );
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(
+          rule,
+          _d(2023, 2, 1),
+          _d(2023, 2, 1),
         ),
         isNull,
       );
     });
 
-    test('maxCount allows count within limit', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily);
-      final start = DateTime(2025, 1, 1);
+    test('with includeStartDate the schedule is the start date alone', () {
+      final rule = monthly.copyWith(includeStartDate: true);
+      final start = monthlyStart;
+      expect(RecurrenceEngine.occursOnDate(rule, start, start), isTrue);
       expect(
-        RecurrenceEngine.computeEndDateFromCount(rule, start, 5, maxCount: 100),
-        DateTime(2025, 1, 5),
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, start),
+        start,
+      );
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2025, 2, 2)),
+        isNull,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2099, 1, 1),
+        ),
+        start,
+      );
+      expect(_next(rule, start, 5), [start]);
+      expect(RecurrenceEngine.lastOccurrence(rule, start), start);
+    });
+
+    test(
+      'with includeStartDate and after-N the schedule is still the start date',
+      () {
+        final rule = monthly.copyWith(
+          includeStartDate: true,
+          end: EndsAfterCount(10),
+        );
+        expect(_next(rule, monthlyStart, 5), [monthlyStart]);
+        expect(
+          RecurrenceEngine.lastOccurrence(rule, monthlyStart),
+          monthlyStart,
+        );
+      },
+    );
+  });
+
+  group('includeStartDate', () {
+    // 2025-01-01 is a Wednesday.
+    final fridays = Weekly(weekdays: [DateTime.friday]);
+    final start = _d(2025, 1, 1);
+
+    test('off: a non-matching start date is not an occurrence', () {
+      final rule = _rule(fridays);
+      expect(RecurrenceEngine.occursOnDate(rule, start, start), isFalse);
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2024, 12, 25)),
+        _d(2025, 1, 3),
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 1, 2),
+        ),
+        isNull,
+      );
+      expect(_next(rule, start, 2), [_d(2025, 1, 3), _d(2025, 1, 10)]);
+      expect(
+        RecurrenceEngine.lastOccurrence(
+          rule.copyWith(end: EndsAfterCount(2)),
+          start,
+        ),
+        _d(2025, 1, 10),
       );
     });
 
-    test('yearly interval 10 computes correctly without safety limit', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        interval: 10,
-        monthOfYear: 3,
-        monthDay: 1,
+    test('on: a non-matching start date is occurrence #1', () {
+      final rule = _rule(fridays, includeStartDate: true);
+      expect(RecurrenceEngine.occursOnDate(rule, start, start), isTrue);
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2024, 12, 25)),
+        start,
       );
-      final start = DateTime(2025, 3, 1);
-      final result = RecurrenceEngine.computeEndDateFromCount(rule, start, 5);
-      expect(result, DateTime(2065, 3, 1));
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2025, 1, 2)),
+        _d(2025, 1, 3),
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 1, 2),
+        ),
+        start,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2024, 12, 31),
+        ),
+        isNull,
+      );
+      expect(_next(rule, start, 3), [start, _d(2025, 1, 3), _d(2025, 1, 10)]);
+      expect(
+        RecurrenceEngine.lastOccurrence(
+          rule.copyWith(end: EndsAfterCount(2)),
+          start,
+        ),
+        _d(2025, 1, 3),
+      );
+    });
+
+    test('on: a matching start date is not duplicated', () {
+      final rule = _rule(Daily(), includeStartDate: true);
+      expect(_next(rule, start, 3), [start, _d(2025, 1, 2), _d(2025, 1, 3)]);
+      expect(
+        RecurrenceEngine.lastOccurrence(
+          rule.copyWith(end: EndsAfterCount(2)),
+          start,
+        ),
+        _d(2025, 1, 2),
+      );
+      expect(
+        RecurrenceEngine.occurrencesInRange(
+          rule,
+          start,
+          _d(2024, 12, 30),
+          _d(2025, 1, 2),
+        ),
+        [start, _d(2025, 1, 2)],
+      );
     });
   });
 
-  // ── Invalid/incomplete rules ───────────────────────────────────────────
-
-  group('invalid rule handling', () {
-    test('nextOccurrences with null daysOfWeek returns empty', () {
-      final rule = RecurrenceRule(type: RecurrenceType.weekly);
-      final start = DateTime(2025, 1, 6);
+  group('ends', () {
+    test('until is inclusive', () {
+      final rule = _rule(Daily(), end: EndsOnDate(_d(2025, 1, 5)));
+      final start = _d(2025, 1, 1);
       expect(
-        RecurrenceEngine.nextOccurrences(rule, start, start, count: 5),
-        isEmpty,
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 1, 5), start),
+        isTrue,
       );
+      expect(
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 1, 6), start),
+        isFalse,
+      );
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2025, 1, 6)),
+        isNull,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 1, 10),
+        ),
+        _d(2025, 1, 5),
+      );
+      expect(RecurrenceEngine.lastOccurrence(rule, start), _d(2025, 1, 5));
+      expect(_next(rule, start, 10), [
+        _d(2025, 1, 1),
+        _d(2025, 1, 2),
+        _d(2025, 1, 3),
+        _d(2025, 1, 4),
+        _d(2025, 1, 5),
+      ]);
     });
 
-    test('nextOccurrences with empty daysOfWeek returns empty', () {
-      final rule = RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: []);
-      final start = DateTime(2025, 1, 6);
+    test('until before the start date is a valid empty schedule', () {
+      final rule = _rule(
+        Daily(),
+        end: EndsOnDate(_d(2025, 1, 5)),
+        includeStartDate: true,
+      );
+      final start = _d(2025, 1, 10);
+      expect(RecurrenceEngine.occursOnDate(rule, start, start), isFalse);
       expect(
-        RecurrenceEngine.nextOccurrences(rule, start, start, count: 5),
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2025, 1, 1)),
+        isNull,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 1, 20),
+        ),
+        isNull,
+      );
+      expect(
+        RecurrenceEngine.occurrencesInRange(
+          rule,
+          start,
+          _d(2025, 1, 1),
+          _d(2025, 1, 31),
+        ),
         isEmpty,
       );
+      expect(RecurrenceEngine.lastOccurrence(rule, start), isNull);
     });
 
-    test('nextOccurrences monthly with null monthDay returns empty', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly);
-      final start = DateTime(2025, 1, 1);
-      expect(
-        RecurrenceEngine.nextOccurrences(rule, start, start, count: 5),
-        isEmpty,
+    test('after N keeps the first N occurrences', () {
+      final rule = _rule(
+        Weekly(weekdays: [DateTime.friday]),
+        end: EndsAfterCount(3),
       );
-    });
-
-    test('nextOccurrences yearly with null fields returns empty', () {
-      final rule = RecurrenceRule(type: RecurrenceType.yearly);
-      final start = DateTime(2025, 1, 1);
+      final start = _d(2025, 1, 10);
+      expect(_next(rule, start, 10, from: _d(2025, 1, 1)), [
+        _d(2025, 1, 10),
+        _d(2025, 1, 17),
+        _d(2025, 1, 24),
+      ]);
       expect(
-        RecurrenceEngine.nextOccurrences(rule, start, start, count: 5),
-        isEmpty,
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 1, 31), start),
+        isFalse,
       );
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2025, 1, 25)),
+        isNull,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2025, 2, 15),
+        ),
+        _d(2025, 1, 24),
+      );
+      expect(RecurrenceEngine.lastOccurrence(rule, start), _d(2025, 1, 24));
     });
 
-    test('computeEndDateFromCount with incomplete rule returns null', () {
-      final rule = RecurrenceRule(type: RecurrenceType.yearly);
-      final start = DateTime(2025, 1, 1);
-      expect(RecurrenceEngine.computeEndDateFromCount(rule, start, 5), isNull);
+    test('after 1 is the first occurrence alone', () {
+      final rule = _rule(Daily(interval: 5), end: EndsAfterCount(1));
+      expect(
+        RecurrenceEngine.lastOccurrence(rule, _d(2025, 1, 1)),
+        _d(2025, 1, 1),
+      );
+      expect(_next(rule, _d(2025, 1, 1), 3), [_d(2025, 1, 1)]);
+    });
+
+    test('an unbounded sequence has no last occurrence', () {
+      expect(
+        RecurrenceEngine.lastOccurrence(_rule(Daily()), _d(2025, 1, 1)),
+        isNull,
+      );
     });
   });
 
-  // ── Direct-jump large intervals ────────────────────────────────────────
+  group('query conventions', () {
+    final rule = _rule(Daily());
+    final start = _d(2025, 1, 1);
 
-  group('large interval jumps', () {
-    test('yearly interval 3 returns 5 occurrences', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        interval: 3,
-        monthOfYear: 7,
-        monthDay: 4,
+    test('occurrencesInRange is inclusive at both ends', () {
+      expect(
+        RecurrenceEngine.occurrencesInRange(
+          rule,
+          start,
+          _d(2025, 1, 3),
+          _d(2025, 1, 5),
+        ),
+        [_d(2025, 1, 3), _d(2025, 1, 4), _d(2025, 1, 5)],
       );
-      final start = DateTime(2025, 7, 4);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 5,
+      expect(
+        RecurrenceEngine.occurrencesInRange(
+          rule,
+          start,
+          _d(2025, 1, 3),
+          _d(2025, 1, 3),
+        ),
+        [_d(2025, 1, 3)],
       );
-      expect(results, [
-        DateTime(2028, 7, 4),
-        DateTime(2031, 7, 4),
-        DateTime(2034, 7, 4),
-        DateTime(2037, 7, 4),
-        DateTime(2040, 7, 4),
+    });
+
+    test('occurrencesInRange rejects a reversed range', () {
+      expect(
+        () => RecurrenceEngine.occurrencesInRange(
+          rule,
+          start,
+          _d(2025, 1, 5),
+          _d(2025, 1, 3),
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('nextOccurrences is inclusive of the query date', () {
+      expect(_next(rule, start, 3, from: _d(2025, 1, 4)), [
+        _d(2025, 1, 4),
+        _d(2025, 1, 5),
+        _d(2025, 1, 6),
       ]);
     });
 
-    test('monthly interval 6 returns correct occurrences', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        interval: 6,
-        monthDay: 15,
+    test('nextOccurrences with count 0 is empty and negative counts throw', () {
+      expect(_next(rule, start, 0), isEmpty);
+      expect(() => _next(rule, start, -1), throwsArgumentError);
+    });
+
+    test('queries before the start date see nothing earlier', () {
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(
+          rule,
+          start,
+          _d(2024, 12, 31),
+        ),
+        isNull,
       );
-      final start = DateTime(2025, 1, 15);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 4,
+      expect(
+        RecurrenceEngine.occursOnDate(rule, _d(2024, 12, 31), start),
+        isFalse,
       );
-      expect(results, [
-        DateTime(2025, 7, 15),
-        DateTime(2026, 1, 15),
-        DateTime(2026, 7, 15),
-        DateTime(2027, 1, 15),
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, _d(2024, 6, 1)),
+        start,
+      );
+    });
+  });
+
+  group("Dart's last representable day", () {
+    // The local calendar day of the last instant Dart can represent: the
+    // day itself is constructible in every time zone; the day after it is
+    // not.
+    final limit = DateTime.fromMillisecondsSinceEpoch(8640000000000000);
+    final lastDay = DateTime(limit.year, limit.month, limit.day);
+    final daily = _rule(Daily());
+
+    test(
+      'nextOccurrences returns the requested count when the last of them is that day',
+      () {
+        expect(_next(daily, lastDay, 1), [lastDay]);
+      },
+    );
+
+    test(
+      'occurrencesInRange returns every date through a range ending on that day',
+      () {
+        final start = DateTime(lastDay.year, lastDay.month, lastDay.day - 2);
+        expect(
+          RecurrenceEngine.occurrencesInRange(daily, start, start, lastDay),
+          [
+            start,
+            DateTime(lastDay.year, lastDay.month, lastDay.day - 1),
+            lastDay,
+          ],
+        );
+      },
+    );
+
+    test('single-occurrence queries on that day', () {
+      expect(RecurrenceEngine.occursOnDate(daily, lastDay, lastDay), isTrue);
+      expect(
+        RecurrenceEngine.nextOccurrenceOnOrAfter(daily, lastDay, lastDay),
+        lastDay,
+      );
+      expect(
+        RecurrenceEngine.previousOccurrenceOnOrBefore(daily, lastDay, lastDay),
+        lastDay,
+      );
+    });
+  });
+
+  group('daylight-saving transitions', () {
+    test('daily steps cross the spring-forward date without drift', () {
+      expect(_next(_rule(Daily()), _d(2025, 3, 8), 3), [
+        _d(2025, 3, 8),
+        _d(2025, 3, 9),
+        _d(2025, 3, 10),
       ]);
     });
 
-    test('daily interval 100 returns correct occurrences', () {
-      final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 100);
-      final start = DateTime(2025, 1, 1);
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 3,
-      );
-      expect(results, [
-        DateTime(2025, 4, 11),
-        DateTime(2025, 7, 20),
-        DateTime(2025, 10, 28),
+    test('a 7-day interval crosses the fall-back date without drift', () {
+      final rule = _rule(Daily(interval: 7));
+      expect(_next(rule, _d(2025, 10, 27), 2), [
+        _d(2025, 10, 27),
+        _d(2025, 11, 3),
       ]);
+      expect(
+        RecurrenceEngine.occursOnDate(rule, _d(2025, 11, 3), _d(2025, 10, 27)),
+        isTrue,
+      );
     });
 
-    test('weekly interval 4 with multiple days returns correct pattern', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        interval: 4,
-        daysOfWeek: [1, 5], // Monday, Friday
-      );
-      final start = DateTime(2025, 1, 6); // Monday, week 0
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 4,
-      );
-      expect(results, [
-        DateTime(2025, 1, 10), // Friday week 0
-        DateTime(2025, 2, 3), // Monday week 4
-        DateTime(2025, 2, 7), // Friday week 4
-        DateTime(2025, 3, 3), // Monday week 8
-      ]);
+    test('week alignment survives a transition inside the interval', () {
+      final rule = _rule(Weekly(interval: 2, weekdays: [DateTime.monday]));
+      expect(_next(rule, _d(2025, 3, 3), 2), [_d(2025, 3, 3), _d(2025, 3, 17)]);
     });
 
-    test('monthly relative "last Friday" jumps correctly', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 5,
-        dayOfWeek: 5,
+    test('the test environment observes DST when EXPECT_DST_TZ is defined', () {
+      final spring = DateTime(
+        2025,
+        3,
+        9,
+        12,
+      ).difference(DateTime(2025, 3, 8, 12));
+      final fall = DateTime(
+        2025,
+        11,
+        2,
+        12,
+      ).difference(DateTime(2025, 11, 1, 12));
+      expect(
+        spring != const Duration(hours: 24) ||
+            fall != const Duration(hours: 24),
+        isTrue,
+        reason:
+            'EXPECT_DST_TZ is defined, but the process time zone has no '
+            'DST transition; run this leg with TZ=America/New_York or another '
+            'DST-observing zone',
       );
-      final start = DateTime(2025, 1, 31); // Last Friday of Jan
-      final results = RecurrenceEngine.nextOccurrences(
-        rule,
-        start,
-        start,
-        count: 4,
-      );
-      expect(results, [
-        DateTime(2025, 2, 28),
-        DateTime(2025, 3, 28),
-        DateTime(2025, 4, 25),
-        DateTime(2025, 5, 30),
-      ]);
-    });
+    }, skip: !_expectDstTz);
   });
 }

@@ -2,353 +2,770 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:recurrence_kit/recurrence_kit.dart';
 
-/// Helper to pump a RecurrencePicker inside a minimal Material app.
-Widget _buildTestPicker({
-  required RecurrenceRule rule,
-  required ValueChanged<RecurrenceRule> onChanged,
+/// 2025-01-15 is a Wednesday, the third Wednesday of January.
+final _defaultStart = DateTime(2025, 1, 15);
+
+RecurrenceRule _rule(
+  RecurrencePattern pattern, {
+  RecurrenceEnd end = const NeverEnds(),
+  bool includeStartDate = false,
+}) => RecurrenceRule(
+  pattern: pattern,
+  end: end,
+  includeStartDate: includeStartDate,
+);
+
+/// Hosts a picker the way an app does: it holds the rule and, unless
+/// [accepts] is false, adopts every emission. The held rule lives in the
+/// host's state, so a host is one scenario; [_pump] keys each host so that
+/// successive pumps in a test start from their own initial rule.
+class _Host extends StatefulWidget {
+  const _Host({
+    required this.initialRule,
+    required this.onChanged,
+    required this.startDate,
+    this.firstDayOfWeek = DateTime.sunday,
+    this.theme = const RecurrencePickerTheme(),
+    this.accepts = true,
+    super.key,
+  });
+
+  final RecurrenceRule initialRule;
+  final ValueChanged<RecurrenceRule> onChanged;
+  final DateTime startDate;
+  final int firstDayOfWeek;
+  final RecurrencePickerTheme theme;
+  final bool accepts;
+
+  @override
+  State<_Host> createState() => _HostState();
+}
+
+class _HostState extends State<_Host> {
+  late RecurrenceRule rule = widget.initialRule;
+
+  void replace(RecurrenceRule replacement) =>
+      setState(() => rule = replacement);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: RecurrencePicker(
+            rule: rule,
+            onChanged: (emitted) {
+              widget.onChanged(emitted);
+              if (widget.accepts) setState(() => rule = emitted);
+            },
+            startDate: widget.startDate,
+            firstDayOfWeek: widget.firstDayOfWeek,
+            theme: widget.theme,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pumps a fresh host showing [rule] and returns the list its emissions
+/// are recorded in. Pass [key] to reach the host's state from the test.
+Future<List<RecurrenceRule>> _pump(
+  WidgetTester tester,
+  RecurrenceRule rule, {
   DateTime? startDate,
   int firstDayOfWeek = DateTime.sunday,
   RecurrencePickerTheme theme = const RecurrencePickerTheme(),
-}) {
-  return MaterialApp(
-    home: Scaffold(
-      body: SingleChildScrollView(
-        child: RecurrencePicker(
-          rule: rule,
-          onChanged: onChanged,
-          startDate: startDate ?? DateTime(2025, 1, 15),
-          firstDayOfWeek: firstDayOfWeek,
-          theme: theme,
-        ),
-      ),
+  bool accepts = true,
+  Key? key,
+}) async {
+  final emissions = <RecurrenceRule>[];
+  await tester.pumpWidget(
+    _Host(
+      key: key ?? UniqueKey(),
+      initialRule: rule,
+      onChanged: emissions.add,
+      startDate: startDate ?? _defaultStart,
+      firstDayOfWeek: firstDayOfWeek,
+      theme: theme,
+      accepts: accepts,
     ),
   );
+  return emissions;
 }
 
+Finder _stepperIncrement() => find.byIcon(Icons.add_circle_outline);
+
+Finder _stepperDecrement() => find.byIcon(Icons.remove_circle_outline);
+
+DatePickerDialog _dialog(WidgetTester tester) =>
+    tester.widget<DatePickerDialog>(find.byType(DatePickerDialog));
+
+bool _isEnabled(WidgetTester tester, Finder iconFinder) =>
+    tester
+        .widget<IconButton>(
+          find.ancestor(of: iconFinder, matching: find.byType(IconButton)),
+        )
+        .onPressed !=
+    null;
+
 void main() {
-  // ── Renders with defaults ──────────────────────────────────────────────
-
-  testWidgets('renders without crash with daily rule and default theme', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (_) {},
-      ),
-    );
-
-    expect(find.text('Repeat'), findsOneWidget);
-    expect(find.text('Daily'), findsOneWidget);
-    expect(find.text('Weekly'), findsOneWidget);
-    expect(find.text('Monthly'), findsOneWidget);
-    expect(find.text('Yearly'), findsOneWidget);
-  });
-
-  // ── Frequency chip selection ───────────────────────────────────────────
-
-  testWidgets('tapping Weekly chip fires onChanged with weekly type', (
-    tester,
-  ) async {
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (r) => lastRule = r,
-        startDate: DateTime(2025, 1, 15), // Wednesday = weekday 3
-      ),
-    );
-
-    await tester.tap(find.text('Weekly'));
-    await tester.pumpAndSettle();
-
-    expect(lastRule, isNotNull);
-    expect(lastRule!.type, RecurrenceType.weekly);
-    // Should default daysOfWeek to startDate's weekday.
-    expect(lastRule!.daysOfWeek, contains(3));
-  });
-
-  testWidgets('tapping Monthly chip fires onChanged with monthly type', (
-    tester,
-  ) async {
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (r) => lastRule = r,
-      ),
-    );
-
-    await tester.tap(find.text('Monthly'));
-    await tester.pumpAndSettle();
-
-    expect(lastRule, isNotNull);
-    expect(lastRule!.type, RecurrenceType.monthly);
-  });
-
-  // ── Interval stepper ───────────────────────────────────────────────────
-
-  testWidgets('increment interval fires onChanged with interval + 1', (
-    tester,
-  ) async {
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily, interval: 2),
-        onChanged: (r) => lastRule = r,
-      ),
-    );
-
-    // Find the add button (second icon button in the interval row).
-    final addButtons = find.byIcon(Icons.add_circle_outline);
-    expect(addButtons, findsWidgets);
-    await tester.tap(addButtons.first);
-    await tester.pumpAndSettle();
-
-    expect(lastRule, isNotNull);
-    expect(lastRule!.interval, 3);
-  });
-
-  testWidgets('decrement at interval=1 is disabled', (tester) async {
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily, interval: 1),
-        onChanged: (r) => lastRule = r,
-      ),
-    );
-
-    // Tap the remove button — should be disabled (no callback).
-    final removeButtons = find.byIcon(Icons.remove_circle_outline);
-    expect(removeButtons, findsWidgets);
-    await tester.tap(removeButtons.first);
-    await tester.pumpAndSettle();
-
-    // onChanged should NOT have fired.
-    expect(lastRule, isNull);
-  });
-
-  // ── Day-of-week selector ───────────────────────────────────────────────
-
-  testWidgets('day-of-week selector only visible for weekly type', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (_) {},
-      ),
-    );
-    expect(find.text('On days'), findsNothing);
-
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1]),
-        onChanged: (_) {},
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('On days'), findsOneWidget);
-  });
-
-  // ── Monthly mode toggle ────────────────────────────────────────────────
-
-  testWidgets('monthly shows segmented button for fixed vs relative', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.monthly, monthDay: 15),
-        onChanged: (_) {},
-        startDate: DateTime(2025, 1, 15),
-      ),
-    );
-
-    // Should see "On day 15" in the segmented button.
-    expect(find.textContaining('On day 15'), findsOneWidget);
-  });
-
-  // ── Monthly day stepper boundaries ─────────────────────────────────────
-
-  testWidgets('monthly day stepper cannot go below 1 or above 31', (
-    tester,
-  ) async {
-    // Start at monthDay=1.
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.monthly, monthDay: 1),
-        onChanged: (r) => lastRule = r,
-        startDate: DateTime(2025, 1, 1),
-      ),
-    );
-
-    // The decrement button for day-of-month should be disabled at 1.
-    // Tap it — should not fire onChanged.
-    final removeButtons = find.byIcon(Icons.remove_circle_outline);
-    // Multiple stepper buttons exist (interval row + monthDay row).
-    // We need the one in the monthDay row — it's the second remove button.
-    if (removeButtons.evaluate().length >= 2) {
-      await tester.tap(removeButtons.at(1));
-      await tester.pumpAndSettle();
-      // If onChanged fired, it should still have monthDay >= 1.
-      if (lastRule != null) {
-        expect(lastRule!.monthDay, greaterThanOrEqualTo(1));
+  group('rendering', () {
+    testWidgets('daily', (tester) async {
+      await _pump(tester, _rule(Daily(interval: 3)));
+      expect(find.text('Repeat'), findsOneWidget);
+      for (final label in ['Daily', 'Weekly', 'Monthly', 'Yearly']) {
+        expect(find.text(label), findsOneWidget);
       }
-    }
-  });
+      expect(find.text('Every'), findsOneWidget);
+      expect(find.text('3'), findsOneWidget);
+      expect(find.text('days'), findsOneWidget);
+      expect(find.text('On days'), findsNothing);
+      expect(find.text('Ends'), findsOneWidget);
+      expect(find.text('Never'), findsOneWidget);
+    });
 
-  // ── Yearly summary text ────────────────────────────────────────────────
+    testWidgets('weekly', (tester) async {
+      await _pump(tester, _rule(Weekly(weekdays: [1])));
+      expect(find.text('On days'), findsOneWidget);
+      expect(find.text('week'), findsOneWidget);
+    });
 
-  testWidgets('yearly shows summary text based on startDate', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(
-          type: RecurrenceType.yearly,
-          monthOfYear: 3,
-          monthDay: 14,
+    testWidgets('monthly by day', (tester) async {
+      await _pump(tester, _rule(MonthlyByDay(day: 15)));
+      expect(find.text('On day 15'), findsOneWidget);
+      expect(find.text('On the 3rd Wed'), findsOneWidget);
+      expect(find.text('Day of month: '), findsOneWidget);
+      expect(find.text('month'), findsOneWidget);
+    });
+
+    testWidgets('monthly by weekday', (tester) async {
+      await _pump(
+        tester,
+        _rule(MonthlyByWeekday(position: WeekPosition.last, weekday: 5)),
+      );
+      expect(find.text('On the last Fri'), findsOneWidget);
+      expect(find.text('On day 15'), findsOneWidget);
+      expect(find.text('Last'), findsOneWidget);
+      expect(find.text('Friday'), findsOneWidget);
+    });
+
+    testWidgets('yearly', (tester) async {
+      await _pump(tester, _rule(Yearly(month: 6, day: 15)));
+      expect(find.text('On June 15'), findsOneWidget);
+      expect(find.text('year'), findsOneWidget);
+
+      await _pump(tester, _rule(Yearly(interval: 2, month: 6, day: 15)));
+      expect(find.text('On June 15'), findsOneWidget);
+      expect(find.text('years'), findsOneWidget);
+    });
+
+    testWidgets('end modes', (tester) async {
+      await _pump(tester, _rule(Daily(), end: EndsAfterCount(7)));
+      expect(find.text('7'), findsOneWidget);
+      expect(find.text('occurrences'), findsOneWidget);
+
+      await _pump(
+        tester,
+        _rule(Daily(), end: EndsOnDate(DateTime(2025, 6, 1))),
+      );
+      expect(find.text('Jun 1, 2025'), findsOneWidget);
+    });
+
+    testWidgets('theme accent color reaches the date icon and the end radios', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        _rule(Daily(), end: EndsOnDate(DateTime(2025, 6, 1))),
+        theme: const RecurrencePickerTheme(accentColor: Colors.teal),
+      );
+      expect(
+        tester.widget<Icon>(find.byIcon(Icons.calendar_today)).color,
+        Colors.teal,
+      );
+      final tiles = tester
+          .widgetList<RadioListTile<Type>>(find.byType(RadioListTile<Type>))
+          .toList();
+      expect(tiles, hasLength(3));
+      for (final tile in tiles) {
+        expect(tile.activeColor, Colors.teal);
+      }
+    });
+
+    testWidgets('custom date formatter is used', (tester) async {
+      await _pump(
+        tester,
+        _rule(Daily(), end: EndsOnDate(DateTime(2025, 6, 1))),
+        theme: RecurrencePickerTheme(
+          dateFormatter: (d) => '${d.year}/${d.month}/${d.day}',
         ),
-        onChanged: (_) {},
-        startDate: DateTime(2025, 3, 14),
-      ),
-    );
-
-    expect(find.textContaining('Every year on March 14'), findsOneWidget);
+      );
+      expect(find.text('2025/6/1'), findsOneWidget);
+    });
   });
 
-  // ── End condition radios ───────────────────────────────────────────────
+  group('frequency chips', () {
+    testWidgets('Weekly seeds the start weekday and carries the interval', (
+      tester,
+    ) async {
+      final emissions = await _pump(tester, _rule(Daily(interval: 2)));
+      await tester.tap(find.text('Weekly'));
+      await tester.pump();
+      expect(emissions, [
+        _rule(Weekly(interval: 2, weekdays: [DateTime.wednesday])),
+      ]);
+    });
 
-  testWidgets('end condition radios are present', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (_) {},
-      ),
-    );
+    testWidgets('Monthly seeds the start day of month', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily()));
+      await tester.tap(find.text('Monthly'));
+      await tester.pump();
+      expect(emissions, [_rule(MonthlyByDay(day: 15))]);
+    });
 
-    expect(find.text('Ends'), findsOneWidget);
-    expect(find.text('Never'), findsOneWidget);
-    expect(find.text('On date'), findsOneWidget);
-    expect(find.text('After'), findsOneWidget);
+    testWidgets('Yearly seeds the start month and day', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily()));
+      await tester.tap(find.text('Yearly'));
+      await tester.pump();
+      expect(emissions, [_rule(Yearly(month: 1, day: 15))]);
+    });
+
+    testWidgets('Daily from a weekly rule', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Weekly(interval: 3, weekdays: [1, 2])),
+      );
+      await tester.tap(find.text('Daily'));
+      await tester.pump();
+      expect(emissions, [_rule(Daily(interval: 3))]);
+    });
+
+    testWidgets('the active chip emits nothing', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily()));
+      await tester.tap(find.text('Daily'));
+      await tester.pump();
+      expect(emissions, isEmpty);
+
+      final monthly = await _pump(
+        tester,
+        _rule(MonthlyByWeekday(position: WeekPosition.first, weekday: 1)),
+      );
+      await tester.tap(find.text('Monthly'));
+      await tester.pump();
+      expect(monthly, isEmpty);
+    });
+
+    testWidgets('the end and includeStartDate are preserved', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsAfterCount(4), includeStartDate: true),
+      );
+      await tester.tap(find.text('Weekly'));
+      await tester.pump();
+      expect(emissions.single.end, EndsAfterCount(4));
+      expect(emissions.single.includeStartDate, isTrue);
+    });
   });
 
-  testWidgets('selecting onDate shows date picker row', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.onDate,
+  group('interval', () {
+    testWidgets('increments and decrements', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily(interval: 2)));
+      await tester.tap(_stepperIncrement());
+      await tester.pump();
+      expect(emissions.last, _rule(Daily(interval: 3)));
+      await tester.tap(_stepperDecrement());
+      await tester.pump();
+      expect(emissions.last, _rule(Daily(interval: 2)));
+      expect(find.text('2'), findsOneWidget);
+    });
+
+    testWidgets('cannot go below 1', (tester) async {
+      await _pump(tester, _rule(Daily()));
+      expect(_isEnabled(tester, _stepperDecrement()), isFalse);
+      expect(_isEnabled(tester, _stepperIncrement()), isTrue);
+    });
+
+    testWidgets('unit label follows the interval', (tester) async {
+      await _pump(tester, _rule(Weekly(interval: 2, weekdays: [1])));
+      expect(find.text('weeks'), findsOneWidget);
+    });
+  });
+
+  group('weekday selector', () {
+    testWidgets('toggles days on and off', (tester) async {
+      final emissions = await _pump(tester, _rule(Weekly(weekdays: [1])));
+      await tester.tap(find.text('F'));
+      await tester.pump();
+      expect(emissions.last, _rule(Weekly(weekdays: [1, 5])));
+      await tester.tap(find.text('M'));
+      await tester.pump();
+      expect(emissions.last, _rule(Weekly(weekdays: [5])));
+    });
+
+    testWidgets('removing the only day emits nothing', (tester) async {
+      final emissions = await _pump(tester, _rule(Weekly(weekdays: [1])));
+      await tester.tap(find.text('M'));
+      await tester.pump();
+      expect(emissions, isEmpty);
+    });
+
+    testWidgets('firstDayOfWeek orders the circles', (tester) async {
+      await _pump(tester, _rule(Weekly(weekdays: [1])));
+      expect(
+        tester.getTopLeft(find.text('M')).dx,
+        lessThan(tester.getTopLeft(find.text('W')).dx),
+      );
+
+      await _pump(
+        tester,
+        _rule(Weekly(weekdays: [1])),
+        firstDayOfWeek: DateTime.wednesday,
+      );
+      expect(
+        tester.getTopLeft(find.text('W')).dx,
+        lessThan(tester.getTopLeft(find.text('M')).dx),
+      );
+    });
+  });
+
+  group('monthly', () {
+    testWidgets('switching to by-weekday seeds the start position', (
+      tester,
+    ) async {
+      final emissions = await _pump(
+        tester,
+        _rule(MonthlyByDay(interval: 2, day: 15)),
+      );
+      await tester.tap(find.text('On the 3rd Wed'));
+      await tester.pump();
+      expect(emissions, [
+        _rule(
+          MonthlyByWeekday(
+            interval: 2,
+            position: WeekPosition.third,
+            weekday: DateTime.wednesday,
+          ),
         ),
-        onChanged: (_) {},
-      ),
+      ]);
+    });
+
+    testWidgets('switching to by-day seeds the start day', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(MonthlyByWeekday(position: WeekPosition.last, weekday: 5)),
+      );
+      await tester.tap(find.text('On day 15'));
+      await tester.pump();
+      expect(emissions, [_rule(MonthlyByDay(day: 15))]);
+    });
+
+    testWidgets(
+      'a start on the last day of a short month seeds that day and offers the last-day shortcut',
+      (tester) async {
+        final start = DateTime(2025, 2, 28);
+        final emissions = await _pump(tester, _rule(Daily()), startDate: start);
+        await tester.tap(find.text('Monthly'));
+        await tester.pump();
+        expect(emissions.last, _rule(MonthlyByDay(day: 28)));
+        expect(find.text('Last day of month'), findsOneWidget);
+        await tester.tap(find.text('Last day of month'));
+        await tester.pump();
+        expect(emissions.last, _rule(MonthlyByDay(day: 31)));
+        expect(find.text('Last day of month'), findsNothing);
+        expect(find.text('Last day'), findsOneWidget);
+      },
     );
 
-    expect(find.text('Select end date'), findsOneWidget);
-    expect(find.byIcon(Icons.calendar_today), findsOneWidget);
+    testWidgets('day stepper is bounded to 1-31', (tester) async {
+      final emissions = await _pump(tester, _rule(MonthlyByDay(day: 30)));
+      final dayIncrement = _stepperIncrement().last;
+      await tester.tap(dayIncrement);
+      await tester.pump();
+      expect(emissions.last, _rule(MonthlyByDay(day: 31)));
+      expect(_isEnabled(tester, _stepperIncrement().last), isFalse);
+
+      await _pump(tester, _rule(MonthlyByDay(day: 1)));
+      expect(_isEnabled(tester, _stepperDecrement().last), isFalse);
+    });
+
+    testWidgets('the missing-day toggle appears only for days 29-31', (
+      tester,
+    ) async {
+      await _pump(tester, _rule(MonthlyByDay(day: 28)));
+      expect(find.text('In shorter months'), findsNothing);
+
+      final emissions = await _pump(tester, _rule(MonthlyByDay(day: 29)));
+      expect(find.text('In shorter months'), findsOneWidget);
+      expect(find.text('Use last day'), findsOneWidget);
+      await tester.tap(find.text('Skip'));
+      await tester.pump();
+      expect(emissions, [
+        _rule(MonthlyByDay(day: 29, missingDay: MissingDay.skip)),
+      ]);
+      expect(find.text('Skipped in months without a 29th'), findsOneWidget);
+    });
+
+    testWidgets('missingDay survives day edits', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(MonthlyByDay(day: 30, missingDay: MissingDay.skip)),
+      );
+      await tester.tap(_stepperIncrement().last);
+      await tester.pump();
+      expect(
+        emissions.last,
+        _rule(MonthlyByDay(day: 31, missingDay: MissingDay.skip)),
+      );
+    });
+
+    testWidgets('position and weekday dropdowns', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(MonthlyByWeekday(position: WeekPosition.first, weekday: 1)),
+      );
+      await tester.tap(find.text('1st'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Last').last);
+      await tester.pumpAndSettle();
+      expect(
+        emissions.last,
+        _rule(MonthlyByWeekday(position: WeekPosition.last, weekday: 1)),
+      );
+
+      await tester.tap(find.text('Monday'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Friday').last);
+      await tester.pumpAndSettle();
+      expect(
+        emissions.last,
+        _rule(MonthlyByWeekday(position: WeekPosition.last, weekday: 5)),
+      );
+    });
   });
 
-  testWidgets('selecting afterCount shows count stepper', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.afterCount,
-          endAfterCount: 10,
+  group('yearly', () {
+    testWidgets('the non-leap-year toggle appears only for February 29', (
+      tester,
+    ) async {
+      await _pump(tester, _rule(Yearly(month: 6, day: 15)));
+      expect(find.text('In non-leap years'), findsNothing);
+
+      final emissions = await _pump(
+        tester,
+        _rule(Yearly(month: 2, day: 29)),
+        startDate: DateTime(2024, 2, 29),
+      );
+      expect(find.text('In non-leap years'), findsOneWidget);
+      expect(find.text('Feb 28'), findsOneWidget);
+      await tester.tap(find.text('Skip'));
+      await tester.pump();
+      expect(emissions, [
+        _rule(Yearly(month: 2, day: 29, missingDay: MissingDay.skip)),
+      ]);
+    });
+  });
+
+  group('end condition', () {
+    testWidgets('Never', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsAfterCount(3)),
+      );
+      await tester.tap(find.text('Never'));
+      await tester.pump();
+      expect(emissions, [_rule(Daily())]);
+    });
+
+    testWidgets('After seeds the theme default count', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily()));
+      await tester.tap(find.text('After'));
+      await tester.pump();
+      expect(emissions, [_rule(Daily(), end: EndsAfterCount(10))]);
+
+      final custom = await _pump(
+        tester,
+        _rule(Daily()),
+        theme: const RecurrencePickerTheme(defaultEndAfterCount: 3),
+      );
+      await tester.tap(find.text('After'));
+      await tester.pump();
+      expect(custom, [_rule(Daily(), end: EndsAfterCount(3))]);
+    });
+
+    testWidgets('the count stepper is bounded below by 1', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsAfterCount(1)),
+      );
+      expect(_isEnabled(tester, _stepperDecrement().last), isFalse);
+      await tester.tap(_stepperIncrement().last);
+      await tester.pump();
+      expect(emissions.last, _rule(Daily(), end: EndsAfterCount(2)));
+    });
+
+    testWidgets('the active mode emits nothing', (tester) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsAfterCount(3)),
+      );
+      await tester.tap(find.text('After'));
+      await tester.pump();
+      expect(emissions, isEmpty);
+    });
+
+    testWidgets('On date seeds the first date of the schedule', (tester) async {
+      final daily = await _pump(tester, _rule(Daily()));
+      await tester.tap(find.text('On date'));
+      await tester.pump();
+      expect(daily, [_rule(Daily(), end: EndsOnDate(_defaultStart))]);
+
+      final fridays = await _pump(
+        tester,
+        _rule(Weekly(weekdays: [DateTime.friday])),
+      );
+      await tester.tap(find.text('On date'));
+      await tester.pump();
+      expect(fridays, [
+        _rule(
+          Weekly(weekdays: [DateTime.friday]),
+          end: EndsOnDate(DateTime(2025, 1, 17)),
         ),
-        onChanged: (_) {},
-      ),
-    );
+      ]);
+    });
 
-    expect(find.text('occurrences'), findsOneWidget);
-    expect(find.text('10'), findsOneWidget);
+    testWidgets('On date for a schedule with no dates seeds the start date', (
+      tester,
+    ) async {
+      final never = MonthlyByDay(
+        interval: 12,
+        day: 30,
+        missingDay: MissingDay.skip,
+      );
+      final start = DateTime(2025, 2, 1);
+      final emissions = await _pump(tester, _rule(never), startDate: start);
+      await tester.tap(find.text('On date'));
+      await tester.pump();
+      expect(emissions, [_rule(never, end: EndsOnDate(start))]);
+    });
+
+    testWidgets('On date ignores the existing after-count when seeding', (
+      tester,
+    ) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsAfterCount(1)),
+      );
+      await tester.tap(find.text('On date'));
+      await tester.pump();
+      expect(emissions, [_rule(Daily(), end: EndsOnDate(_defaultStart))]);
+    });
   });
 
-  // ── End-after-count stepper ────────────────────────────────────────────
+  group('end-date dialog', () {
+    final onDate = _rule(Daily(), end: EndsOnDate(DateTime(2025, 1, 20)));
 
-  testWidgets('end-after-count increment works', (tester) async {
-    RecurrenceRule? lastRule;
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.afterCount,
-          endAfterCount: 5,
+    testWidgets('confirming keeps the existing date as the cursor', (
+      tester,
+    ) async {
+      final emissions = await _pump(tester, onDate);
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(emissions, [onDate]);
+    });
+
+    testWidgets('cancelling emits nothing', (tester) async {
+      final emissions = await _pump(tester, onDate);
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(emissions, isEmpty);
+    });
+
+    testWidgets('a picked date replaces the end', (tester) async {
+      final emissions = await _pump(tester, onDate);
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('25'));
+      await tester.pump();
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(emissions, [
+        _rule(Daily(), end: EndsOnDate(DateTime(2025, 1, 25))),
+      ]);
+    });
+
+    testWidgets(
+      'the picked date applies to the rule current when the dialog closes',
+      (tester) async {
+        final key = GlobalKey<_HostState>();
+        final emissions = await _pump(tester, onDate, key: key);
+        await tester.tap(find.byIcon(Icons.calendar_today));
+        await tester.pumpAndSettle();
+        key.currentState!.replace(onDate.copyWith(pattern: Daily(interval: 5)));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('25'));
+        await tester.pump();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        expect(emissions, [
+          _rule(Daily(interval: 5), end: EndsOnDate(DateTime(2025, 1, 25))),
+        ]);
+      },
+    );
+
+    testWidgets('an end before the start date opens at the start date', (
+      tester,
+    ) async {
+      final emissions = await _pump(
+        tester,
+        _rule(Daily(), end: EndsOnDate(DateTime(2024, 6, 1))),
+      );
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      expect(_dialog(tester).initialDate, _defaultStart);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(emissions, [_rule(Daily(), end: EndsOnDate(_defaultStart))]);
+    });
+
+    testWidgets('the range runs from the start date to a century ahead', (
+      tester,
+    ) async {
+      await _pump(tester, onDate);
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      final dialog = _dialog(tester);
+      expect(dialog.firstDate, _defaultStart);
+      expect(dialog.lastDate, DateTime(2125, 1, 15));
+      expect(dialog.initialDate, DateTime(2025, 1, 20));
+    });
+
+    testWidgets('the default horizon uses the last day of a shorter month', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        _rule(Daily(), end: EndsOnDate(DateTime(2000, 3, 1))),
+        startDate: DateTime(2000, 2, 29),
+      );
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      expect(_dialog(tester).lastDate, DateTime(2100, 2, 28));
+    });
+
+    testWidgets('a custom horizon replaces the default in either direction', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        onDate,
+        theme: RecurrencePickerTheme(
+          datePickerLastDate: DateTime(2030, 12, 31),
         ),
-        onChanged: (r) => lastRule = r,
-      ),
-    );
+      );
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      expect(_dialog(tester).lastDate, DateTime(2030, 12, 31));
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
 
-    // Find add buttons — the last one should be for the count stepper.
-    final addButtons = find.byIcon(Icons.add_circle_outline);
-    await tester.tap(addButtons.last);
-    await tester.pumpAndSettle();
+      await _pump(
+        tester,
+        onDate,
+        theme: RecurrencePickerTheme(datePickerLastDate: DateTime(2300, 1, 1)),
+      );
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      expect(_dialog(tester).lastDate, DateTime(2300, 1, 1));
+    });
 
-    expect(lastRule, isNotNull);
-    expect(lastRule!.endAfterCount, 6);
+    testWidgets('a horizon on the start date is accepted', (tester) async {
+      await _pump(
+        tester,
+        onDate.copyWith(end: EndsOnDate(_defaultStart)),
+        theme: RecurrencePickerTheme(
+          datePickerLastDate: DateTime(2025, 1, 15, 9),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      final dialog = _dialog(tester);
+      expect(dialog.firstDate, _defaultStart);
+      expect(dialog.lastDate, _defaultStart);
+    });
+
+    testWidgets('an end beyond the horizon stays reachable', (tester) async {
+      final far = _rule(Daily(), end: EndsOnDate(DateTime(2100, 1, 1)));
+      final emissions = await _pump(
+        tester,
+        far,
+        theme: RecurrencePickerTheme(datePickerLastDate: DateTime(2030, 1, 1)),
+      );
+      await tester.tap(find.byIcon(Icons.calendar_today));
+      await tester.pumpAndSettle();
+      final dialog = _dialog(tester);
+      expect(dialog.lastDate, DateTime(2100, 1, 1));
+      expect(dialog.initialDate, DateTime(2100, 1, 1));
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(emissions, [far]);
+    });
   });
 
-  // ── Custom theme ───────────────────────────────────────────────────────
+  group('configuration', () {
+    testWidgets('a count seed below 1 is rejected on build', (tester) async {
+      await _pump(
+        tester,
+        _rule(Daily()),
+        theme: const RecurrencePickerTheme(defaultEndAfterCount: 0),
+      );
+      expect(tester.takeException(), isArgumentError);
+    });
 
-  testWidgets('custom theme accentColor is applied', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (_) {},
-        theme: const RecurrencePickerTheme(accentColor: Colors.red),
-      ),
-    );
+    testWidgets('a horizon before the start date is rejected on build', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        _rule(Daily()),
+        theme: RecurrencePickerTheme(datePickerLastDate: DateTime(2025, 1, 14)),
+      );
+      expect(tester.takeException(), isArgumentError);
+    });
 
-    // Verify a stepper button uses the custom color.
-    final iconButton = tester.widget<IconButton>(find.byType(IconButton).first);
-    expect(iconButton.color, Colors.red);
+    testWidgets('firstDayOfWeek outside 1-7 is rejected on build', (
+      tester,
+    ) async {
+      await _pump(tester, _rule(Daily()), firstDayOfWeek: 0);
+      expect(tester.takeException(), isArgumentError);
+      await _pump(tester, _rule(Daily()), firstDayOfWeek: 8);
+      expect(tester.takeException(), isArgumentError);
+    });
   });
 
-  // ── didUpdateWidget ────────────────────────────────────────────────────
+  group('controlled behavior', () {
+    testWidgets('an ignored emission changes nothing', (tester) async {
+      final emissions = await _pump(tester, _rule(Daily()), accepts: false);
+      await tester.tap(_stepperIncrement());
+      await tester.pump();
+      await tester.tap(_stepperIncrement());
+      await tester.pump();
+      expect(emissions, [_rule(Daily(interval: 2)), _rule(Daily(interval: 2))]);
+      expect(find.text('1'), findsOneWidget);
+    });
 
-  testWidgets('changing rule prop reinitializes state', (tester) async {
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.daily),
-        onChanged: (_) {},
-      ),
-    );
-    expect(find.text('On days'), findsNothing);
-
-    // Switch to weekly rule.
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1]),
-        onChanged: (_) {},
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('On days'), findsOneWidget);
-  });
-
-  // ── firstDayOfWeek ─────────────────────────────────────────────────────
-
-  testWidgets('firstDayOfWeek changes day-of-week order', (tester) async {
-    // With Sunday first (default), the first circle should be 'S'.
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1]),
-        onChanged: (_) {},
-        firstDayOfWeek: DateTime.sunday,
-      ),
-    );
-
-    // With Monday first, the first circle should be 'M'.
-    await tester.pumpWidget(
-      _buildTestPicker(
-        rule: RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1]),
-        onChanged: (_) {},
-        firstDayOfWeek: DateTime.monday,
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    // Both should render without error. Detailed ordering is validated
-    // by the _DayOfWeekSelector._orderedDays logic in unit tests above.
-    expect(find.text('On days'), findsOneWidget);
+    testWidgets('a replaced rule is rendered', (tester) async {
+      final key = GlobalKey<_HostState>();
+      await _pump(tester, _rule(Daily()), key: key);
+      expect(find.text('On days'), findsNothing);
+      key.currentState!.replace(_rule(Weekly(weekdays: [1])));
+      await tester.pumpAndSettle();
+      expect(find.text('On days'), findsOneWidget);
+    });
   });
 }

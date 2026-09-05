@@ -1,327 +1,295 @@
-import 'format_helpers.dart' as helpers;
-import 'recurrence_end_type.dart';
-import 'recurrence_type.dart';
+import 'format_helpers.dart';
+import 'recurrence_model.dart';
 
-/// An immutable description of a repeating schedule.
+/// A complete, immutable description of a repeating schedule: one
+/// [pattern], one [end], and whether the schedule's start date is itself
+/// an occurrence.
 ///
-/// Encodes the frequency, interval, day/week/month constraints, and end
-/// condition for a recurrence pattern. Pairs with [RecurrenceEngine] for
-/// occurrence computation and [RecurrencePicker] for interactive editing.
+/// A rule does not know its start date. Paired with one by
+/// `RecurrenceEngine`, it defines the occurrence sequence described in the
+/// package README.
 ///
 /// ```dart
-/// // Every 2 weeks on Monday and Friday, ending after 10 occurrences
 /// final rule = RecurrenceRule(
-///   type: RecurrenceType.weekly,
-///   interval: 2,
-///   daysOfWeek: [1, 5],
-///   endType: RecurrenceEndType.afterCount,
-///   endAfterCount: 10,
+///   pattern: Weekly(interval: 2, weekdays: [DateTime.monday, DateTime.friday]),
+///   end: EndsAfterCount(10),
 /// );
-///
 /// print(rule.displayText); // "Every 2 weeks: Mon, Fri · for 10 times"
 /// ```
-///
-/// ## Serialization
-///
-/// [toJson] and [fromJson] produce and consume a plain `Map<String, dynamic>`
-/// suitable for JSON storage or Drift `TypeConverter` integration.
-class RecurrenceRule {
-  /// Creates a recurrence rule.
-  ///
-  /// Only [type] is required. All other fields default to the simplest
-  /// configuration for that frequency (interval 1, no end condition).
+final class RecurrenceRule {
   RecurrenceRule({
-    required this.type,
-    this.interval = 1,
-    this.daysOfWeek,
-    this.monthDay,
-    this.weekOfMonth,
-    this.dayOfWeek,
-    this.monthOfYear,
-    this.endType = RecurrenceEndType.never,
-    this.endDate,
-    this.endAfterCount,
+    required this.pattern,
+    required this.end,
+    this.includeStartDate = false,
   });
 
-  factory RecurrenceRule.fromJson(Map<String, dynamic> json) {
-    return RecurrenceRule(
-      type: RecurrenceType.values.firstWhere(
-        (e) => e.name == json['type'],
-        orElse: () => RecurrenceType.daily,
-      ),
-      interval: json['interval'] as int? ?? 1,
-      daysOfWeek: (json['daysOfWeek'] as List<dynamic>?)?.cast<int>(),
-      monthDay: json['monthDay'] as int?,
-      weekOfMonth: json['weekOfMonth'] as int?,
-      dayOfWeek: json['dayOfWeek'] as int?,
-      monthOfYear: json['monthOfYear'] as int?,
-      endType: json['endType'] != null
-          ? RecurrenceEndType.values.firstWhere(
-              (e) => e.name == json['endType'],
-              orElse: () => RecurrenceEndType.never,
-            )
-          : RecurrenceEndType.never,
-      endDate: json['endDate'] != null
-          ? DateTime.parse(json['endDate'] as String)
-          : null,
-      endAfterCount: json['endAfterCount'] as int?,
-    );
-  }
-
-  final RecurrenceType type;
-
-  /// Every N days/weeks/months/years.
-  final int interval;
-
-  /// For [RecurrenceType.weekly]: which days (1=Mon … 7=Sun, ISO weekday).
-  final List<int>? daysOfWeek;
-
-  /// For [RecurrenceType.monthly] (fixed date mode) and [RecurrenceType.yearly]:
-  /// day of month (1–31).
-  final int? monthDay;
-
-  /// For [RecurrenceType.monthly] (relative weekday mode): which week (1–4
-  /// literal, 5 = last occurrence of the weekday in that month).
-  final int? weekOfMonth;
-
-  /// For [RecurrenceType.monthly] (relative weekday mode): ISO weekday
-  /// (1=Mon … 7=Sun).
-  final int? dayOfWeek;
-
-  /// For [RecurrenceType.yearly]: month (1–12).
-  final int? monthOfYear;
-
-  /// How this recurrence ends.
-  final RecurrenceEndType endType;
-
-  /// The date after which no more occurrences are generated.
+  /// Restores a rule from a [toJson] map.
   ///
-  /// For [RecurrenceEndType.onDate], this is user-selected.
-  /// For [RecurrenceEndType.afterCount], this is pre-computed at save time.
-  /// This is the sole recurrence boundary — model-level endDate fields are
-  /// no longer used for recurrence.
-  final DateTime? endDate;
+  /// Reads exactly the fields belonging to each declared `kind` and ignores
+  /// any other key. Integer fields accept any finite number without a
+  /// fractional part. Throws a [FormatException] for an unknown kind, a
+  /// missing field, a wrong-typed field, an out-of-range value, or a date
+  /// whose components do not form a real calendar date.
+  factory RecurrenceRule.fromJson(Map<String, dynamic> json) {
+    try {
+      return RecurrenceRule(
+        pattern: _patternFromJson(_readMap(json, 'pattern')),
+        end: _endFromJson(_readMap(json, 'end')),
+        includeStartDate: _readBool(json, 'includeStartDate'),
+      );
+    } on ArgumentError catch (error) {
+      throw FormatException('$error');
+    }
+  }
 
-  /// Display-only: the original occurrence count when [endType] is
-  /// [RecurrenceEndType.afterCount]. Stored so the UI can show "ends after
-  /// 10 times" and recompute [endDate] if start date or interval changes.
-  final int? endAfterCount;
+  /// The repeating cadence.
+  final RecurrencePattern pattern;
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
+  /// The end condition.
+  final RecurrenceEnd end;
 
-  /// Whether the monthly rule is in relative weekday mode
-  /// (e.g. "2nd Tuesday") vs. fixed date mode (e.g. "on the 15th").
-  bool get isRelativeMonthly =>
-      type == RecurrenceType.monthly &&
-      weekOfMonth != null &&
-      dayOfWeek != null;
+  /// Whether the schedule's start date is occurrence #1 even when it does
+  /// not match [pattern].
+  final bool includeStartDate;
 
+  /// A copy with the given parts replaced.
   RecurrenceRule copyWith({
-    RecurrenceType? type,
-    int? interval,
-    List<int>? daysOfWeek,
-    int? monthDay,
-    int? weekOfMonth,
-    int? dayOfWeek,
-    int? monthOfYear,
-    RecurrenceEndType? endType,
-    DateTime? endDate,
-    int? endAfterCount,
-    bool clearDaysOfWeek = false,
-    bool clearMonthDay = false,
-    bool clearWeekOfMonth = false,
-    bool clearDayOfWeek = false,
-    bool clearMonthOfYear = false,
-    bool clearEndType = false,
-    bool clearEndDate = false,
-    bool clearEndAfterCount = false,
-  }) {
-    return RecurrenceRule(
-      type: type ?? this.type,
-      interval: interval ?? this.interval,
-      daysOfWeek: clearDaysOfWeek ? null : (daysOfWeek ?? this.daysOfWeek),
-      monthDay: clearMonthDay ? null : (monthDay ?? this.monthDay),
-      weekOfMonth: clearWeekOfMonth ? null : (weekOfMonth ?? this.weekOfMonth),
-      dayOfWeek: clearDayOfWeek ? null : (dayOfWeek ?? this.dayOfWeek),
-      monthOfYear: clearMonthOfYear ? null : (monthOfYear ?? this.monthOfYear),
-      endType: clearEndType
-          ? RecurrenceEndType.never
-          : (endType ?? this.endType),
-      endDate: clearEndDate ? null : (endDate ?? this.endDate),
-      endAfterCount: clearEndAfterCount
-          ? null
-          : (endAfterCount ?? this.endAfterCount),
-    );
-  }
-
-  Map<String, dynamic> toJson() => {
-    'type': type.name,
-    'interval': interval,
-    'daysOfWeek': daysOfWeek,
-    'monthDay': monthDay,
-    'weekOfMonth': weekOfMonth,
-    'dayOfWeek': dayOfWeek,
-    'monthOfYear': monthOfYear,
-    'endType': endType.name,
-    'endDate': endDate?.toIso8601String(),
-    'endAfterCount': endAfterCount,
-  };
-
-  String get displayText {
-    final base = _baseDisplayText;
-    final endSuffix = _endDisplaySuffix;
-    if (endSuffix.isEmpty) return base;
-    return '$base · $endSuffix';
-  }
-
-  String get _baseDisplayText {
-    switch (type) {
-      case RecurrenceType.daily:
-        if (interval == 1) return 'Every day';
-        return 'Every $interval days';
-      case RecurrenceType.weekly:
-        final days = daysOfWeek ?? [];
-        if (days.isEmpty) return 'Weekly';
-        const dayAbbreviations = [
-          '',
-          'Mon',
-          'Tue',
-          'Wed',
-          'Thu',
-          'Fri',
-          'Sat',
-          'Sun',
-        ];
-        final sorted = List<int>.from(days)..sort();
-        final dayNames = sorted.map((d) => dayAbbreviations[d]).join(', ');
-        if (interval == 1) return dayNames;
-        return 'Every $interval weeks: $dayNames';
-      case RecurrenceType.monthly:
-        final prefix = interval == 1 ? 'Monthly' : 'Every $interval months';
-        if (isRelativeMonthly) {
-          final ordinal = helpers.ordinalWord(weekOfMonth!);
-          const dayNames = [
-            '',
-            'Monday',
-            'Tuesday',
-            'Wednesday',
-            'Thursday',
-            'Friday',
-            'Saturday',
-            'Sunday',
-          ];
-          return '$prefix on the $ordinal ${dayNames[dayOfWeek!]}';
-        }
-        if (monthDay != null) {
-          if (monthDay == 31) {
-            return '$prefix on the last day';
-          }
-          if (monthDay! >= 29) {
-            return '$prefix on the ${_daySuffix(monthDay!)}'
-                ' (last day in shorter months)';
-          }
-          return '$prefix on the ${_daySuffix(monthDay!)}';
-        }
-        return prefix;
-      case RecurrenceType.yearly:
-        const monthNames = [
-          '',
-          'January',
-          'February',
-          'March',
-          'April',
-          'May',
-          'June',
-          'July',
-          'August',
-          'September',
-          'October',
-          'November',
-          'December',
-        ];
-        final prefix = interval == 1 ? 'Yearly' : 'Every $interval years';
-        if (monthOfYear != null && monthDay != null) {
-          final monthName = monthNames[monthOfYear!];
-          final daysInMonth = DateTime(
-            2024,
-            monthOfYear! + 1,
-            0,
-          ).day; // 2024 is leap year for max
-          if (monthDay! > daysInMonth || (monthOfYear == 2 && monthDay == 29)) {
-            return '$prefix on $monthName $monthDay'
-                ' (last day in shorter years)';
-          }
-          return '$prefix on $monthName $monthDay';
-        }
-        return prefix;
-    }
-  }
-
-  String get _endDisplaySuffix {
-    final effectiveEndType = endType;
-    switch (effectiveEndType) {
-      case RecurrenceEndType.never:
-        return '';
-      case RecurrenceEndType.onDate:
-        if (endDate == null) return '';
-        final d = endDate!;
-        return 'until ${d.month}/${d.day}/${d.year}';
-      case RecurrenceEndType.afterCount:
-        if (endAfterCount == null) return '';
-        return 'for $endAfterCount times';
-    }
-  }
-
-  static String _daySuffix(int day) {
-    if (day >= 11 && day <= 13) return '${day}th';
-    switch (day % 10) {
-      case 1:
-        return '${day}st';
-      case 2:
-        return '${day}nd';
-      case 3:
-        return '${day}rd';
-      default:
-        return '${day}th';
-    }
-  }
+    RecurrencePattern? pattern,
+    RecurrenceEnd? end,
+    bool? includeStartDate,
+  }) => RecurrenceRule(
+    pattern: pattern ?? this.pattern,
+    end: end ?? this.end,
+    includeStartDate: includeStartDate ?? this.includeStartDate,
+  );
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is RecurrenceRule &&
-          type == other.type &&
-          interval == other.interval &&
-          _listEquals(daysOfWeek, other.daysOfWeek) &&
-          monthDay == other.monthDay &&
-          weekOfMonth == other.weekOfMonth &&
-          dayOfWeek == other.dayOfWeek &&
-          monthOfYear == other.monthOfYear &&
-          endType == other.endType &&
-          endDate == other.endDate &&
-          endAfterCount == other.endAfterCount;
+          pattern == other.pattern &&
+          end == other.end &&
+          includeStartDate == other.includeStartDate;
 
   @override
-  int get hashCode => Object.hash(
-    type,
-    interval,
-    Object.hashAll(daysOfWeek ?? []),
-    monthDay,
-    weekOfMonth,
-    dayOfWeek,
-    monthOfYear,
-    endType,
-    endDate,
-    endAfterCount,
-  );
+  int get hashCode => Object.hash(pattern, end, includeStartDate);
 
-  static bool _listEquals(List<int>? a, List<int>? b) {
-    if (a == null && b == null) return true;
-    if (a == null || b == null) return false;
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
+  // ── Serialization ─────────────────────────────────────────────────────
+
+  /// A plain map suitable for JSON storage; see [RecurrenceRule.fromJson].
+  Map<String, dynamic> toJson() => {
+    'pattern': _patternToJson(pattern),
+    'end': _endToJson(end),
+    'includeStartDate': includeStartDate,
+  };
+
+  static Map<String, dynamic> _patternToJson(RecurrencePattern pattern) =>
+      switch (pattern) {
+        Daily(:final interval) => {'kind': 'daily', 'interval': interval},
+        Weekly(:final interval, :final weekdays) => {
+          'kind': 'weekly',
+          'interval': interval,
+          'weekdays': weekdays.toList(),
+        },
+        MonthlyByDay(:final interval, :final day, :final missingDay) => {
+          'kind': 'monthlyByDay',
+          'interval': interval,
+          'day': day,
+          'missingDay': missingDay.name,
+        },
+        MonthlyByWeekday(:final interval, :final position, :final weekday) => {
+          'kind': 'monthlyByWeekday',
+          'interval': interval,
+          'position': position.name,
+          'weekday': weekday,
+        },
+        Yearly(:final interval, :final month, :final day, :final missingDay) =>
+          {
+            'kind': 'yearly',
+            'interval': interval,
+            'month': month,
+            'day': day,
+            'missingDay': missingDay.name,
+          },
+      };
+
+  static RecurrencePattern _patternFromJson(Map<String, dynamic> json) =>
+      switch (_readString(json, 'kind')) {
+        'daily' => Daily(interval: _readInt(json, 'interval')),
+        'weekly' => Weekly(
+          interval: _readInt(json, 'interval'),
+          weekdays: _readIntList(json, 'weekdays'),
+        ),
+        'monthlyByDay' => MonthlyByDay(
+          interval: _readInt(json, 'interval'),
+          day: _readInt(json, 'day'),
+          missingDay: _readEnum(json, 'missingDay', MissingDay.values),
+        ),
+        'monthlyByWeekday' => MonthlyByWeekday(
+          interval: _readInt(json, 'interval'),
+          position: _readEnum(json, 'position', WeekPosition.values),
+          weekday: _readInt(json, 'weekday'),
+        ),
+        'yearly' => Yearly(
+          interval: _readInt(json, 'interval'),
+          month: _readInt(json, 'month'),
+          day: _readInt(json, 'day'),
+          missingDay: _readEnum(json, 'missingDay', MissingDay.values),
+        ),
+        final kind => throw FormatException('Unknown pattern kind: $kind'),
+      };
+
+  static Map<String, dynamic> _endToJson(RecurrenceEnd end) => switch (end) {
+    NeverEnds() => {'kind': 'never'},
+    EndsOnDate(:final date) => {
+      'kind': 'onDate',
+      'date': {'year': date.year, 'month': date.month, 'day': date.day},
+    },
+    EndsAfterCount(:final count) => {'kind': 'afterCount', 'count': count},
+  };
+
+  static RecurrenceEnd _endFromJson(Map<String, dynamic> json) =>
+      switch (_readString(json, 'kind')) {
+        'never' => const NeverEnds(),
+        'onDate' => EndsOnDate(_readDate(_readMap(json, 'date'))),
+        'afterCount' => EndsAfterCount(_readInt(json, 'count')),
+        final kind => throw FormatException('Unknown end kind: $kind'),
+      };
+
+  /// Reads a `{year, month, day}` object, rejecting components that do not
+  /// form a real calendar date. Dart normalizes overflowing components, so
+  /// the constructed date is compared against the supplied ones.
+  static DateTime _readDate(Map<String, dynamic> json) {
+    final year = _readInt(json, 'year');
+    final month = _readInt(json, 'month');
+    final day = _readInt(json, 'day');
+    final date = DateTime(year, month, day);
+    if (date.year != year || date.month != month || date.day != day) {
+      throw FormatException('Not a calendar date: $year-$month-$day');
     }
-    return true;
+    return date;
   }
+
+  static Object _readRequired(Map<String, dynamic> json, String key) {
+    final value = json[key];
+    if (value == null) throw FormatException('Missing field: $key');
+    return value;
+  }
+
+  static Map<String, dynamic> _readMap(Map<String, dynamic> json, String key) {
+    final value = _readRequired(json, key);
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map && value.keys.every((k) => k is String)) {
+      return Map<String, dynamic>.from(value);
+    }
+    throw FormatException('Field "$key" must be an object: $value');
+  }
+
+  static String _readString(Map<String, dynamic> json, String key) {
+    final value = _readRequired(json, key);
+    if (value is String) return value;
+    throw FormatException('Field "$key" must be a string: $value');
+  }
+
+  static int _readInt(Map<String, dynamic> json, String key) =>
+      _asInt(_readRequired(json, key), key);
+
+  /// Accepts a finite number without a fractional part, so that `2` and
+  /// `2.0` read identically on every platform. Both branches check
+  /// finiteness because on the web platform `double.infinity is int` holds.
+  static int _asInt(Object? value, String key) {
+    if (value is int && value.isFinite) return value;
+    if (value is double &&
+        value.isFinite &&
+        value == value.truncateToDouble()) {
+      return value.toInt();
+    }
+    throw FormatException('Field "$key" must be an integer: $value');
+  }
+
+  static bool _readBool(Map<String, dynamic> json, String key) {
+    final value = _readRequired(json, key);
+    if (value is bool) return value;
+    throw FormatException('Field "$key" must be a boolean: $value');
+  }
+
+  static List<int> _readIntList(Map<String, dynamic> json, String key) {
+    final value = _readRequired(json, key);
+    if (value is! List) {
+      throw FormatException('Field "$key" must be a list of integers: $value');
+    }
+    return [for (final element in value) _asInt(element, key)];
+  }
+
+  static T _readEnum<T extends Enum>(
+    Map<String, dynamic> json,
+    String key,
+    List<T> values,
+  ) {
+    final name = _readString(json, key);
+    for (final value in values) {
+      if (value.name == name) return value;
+    }
+    throw FormatException('Field "$key" has an unknown value: $name');
+  }
+
+  // ── Display ───────────────────────────────────────────────────────────
+
+  /// An English summary such as "Every 2 weeks: Mon, Fri · for 10 times".
+  String get displayText => [
+    _patternText(pattern),
+    _endText(end),
+    if (includeStartDate) 'including start date',
+  ].where((part) => part.isNotEmpty).join(' · ');
+
+  static String _patternText(RecurrencePattern pattern) => switch (pattern) {
+    Daily(:final interval) =>
+      interval == 1 ? 'Every day' : 'Every $interval days',
+    Weekly(:final interval, :final weekdays) => _weeklyText(interval, weekdays),
+    MonthlyByDay(:final interval, :final day, :final missingDay) =>
+      '${_every(interval, 'Monthly', 'months')} '
+          '${_monthlyDayText(day, missingDay)}',
+    MonthlyByWeekday(:final interval, :final position, :final weekday) =>
+      '${_every(interval, 'Monthly', 'months')} on the '
+          '${positionWord(position)} ${longDayName(weekday)}',
+    Yearly(:final interval, :final month, :final day, :final missingDay) =>
+      '${_every(interval, 'Yearly', 'years')} '
+          '${_yearlyDayText(month, day, missingDay)}',
+  };
+
+  static String _weeklyText(int interval, List<int> weekdays) {
+    final names = weekdays.map(shortDayName).join(', ');
+    return interval == 1 ? names : 'Every $interval weeks: $names';
+  }
+
+  static String _every(int interval, String single, String pluralUnit) =>
+      interval == 1 ? single : 'Every $interval $pluralUnit';
+
+  static String _monthlyDayText(int day, MissingDay missingDay) {
+    if (day < 29) return 'on the ${ordinal(day)}';
+    return switch (missingDay) {
+      MissingDay.useLastDay when day == 31 => 'on the last day',
+      MissingDay.useLastDay =>
+        'on the ${ordinal(day)}, using the last day in shorter months',
+      MissingDay.skip =>
+        'on the ${ordinal(day)}, skipping months without that day',
+    };
+  }
+
+  static String _yearlyDayText(int month, int day, MissingDay missingDay) {
+    if (month != DateTime.february || day != 29) {
+      return 'on ${monthName(month)} $day';
+    }
+    return switch (missingDay) {
+      MissingDay.useLastDay => 'on February 29, using Feb 28 in non-leap years',
+      MissingDay.skip => 'on February 29, skipping non-leap years',
+    };
+  }
+
+  static String _endText(RecurrenceEnd end) => switch (end) {
+    NeverEnds() => '',
+    EndsOnDate(:final date) => 'until ${date.month}/${date.day}/${date.year}',
+    EndsAfterCount(:final count) =>
+      count == 1 ? 'for 1 time' : 'for $count times',
+  };
 }

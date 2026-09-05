@@ -24,12 +24,21 @@ jobs:
       - run: flutter analyze
 
   test:
-    name: Test
+    name: Test (${{ matrix.tz }})
     runs-on: ubuntu-latest
     container: instrumentisto/flutter:latest
     if: github.actor != 'resengi-release-bot[bot]'
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tz: America/New_York
+            args: --dart-define=EXPECT_DST_TZ=true
+          - tz: UTC
+            args: ""
+    env:
+      TZ: ${{ matrix.tz }}
     steps:
       - uses: actions/checkout@v4
       - run: flutter pub get
-      - run: flutter test
+      - run: flutter test ${{ matrix.args }}

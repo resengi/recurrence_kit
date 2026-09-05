@@ -47,12 +47,14 @@ class _ExampleScreenState extends State<ExampleScreen> {
   bool _useDarkTheme = false;
 
   late RecurrenceRule _rule = RecurrenceRule(
-    type: RecurrenceType.weekly,
-    daysOfWeek: [_startDate.weekday],
+    pattern: Weekly(weekdays: [_startDate.weekday]),
+    end: const NeverEnds(),
   );
 
-  // Cached computed values — updated in _updateRule(), not in build().
+  // Derived display values, recomputed in _updateRule() rather than in
+  // build().
   List<DateTime> _upcoming = [];
+  DateTime? _lastOccurrence;
   String _jsonString = '';
 
   RecurrencePickerTheme get _pickerTheme =>
@@ -71,35 +73,28 @@ class _ExampleScreenState extends State<ExampleScreen> {
     });
   }
 
-  /// Recomputes derived display values from the current [_rule].
-  ///
-  /// When endType is afterCount, resolves the concrete endDate via
-  /// [RecurrenceEngine.computeEndDateFromCount] before querying
-  /// occurrences — this is the workflow described in the
-  /// [RecurrencePicker] docs.
+  /// Recomputes the derived display values from the current [_rule]. The
+  /// rule and the start date are all the engine needs; an after-N end is
+  /// interpreted directly.
   void _recompute() {
-    final effectiveRule =
-        _rule.endType == RecurrenceEndType.afterCount &&
-            _rule.endAfterCount != null
-        ? _rule.copyWith(
-            endDate: RecurrenceEngine.computeEndDateFromCount(
-              _rule,
-              _startDate,
-              _rule.endAfterCount!,
-            ),
-          )
-        : _rule;
-
-    // afterDate is exclusive, so pass the day before startDate to
-    // include the first occurrence (which may be startDate itself).
     _upcoming = RecurrenceEngine.nextOccurrences(
-      effectiveRule,
+      _rule,
       _startDate,
-      _startDate.subtract(const Duration(days: 1)),
+      _startDate,
       count: 5,
     );
-
+    _lastOccurrence = RecurrenceEngine.lastOccurrence(_rule, _startDate);
     _jsonString = const JsonEncoder.withIndent('  ').convert(_rule.toJson());
+  }
+
+  /// [_upcoming] is queried from the start date, so an empty list means the
+  /// schedule has no occurrences; a non-empty schedule without a last
+  /// occurrence is unbounded.
+  String get _endSummary {
+    if (_upcoming.isEmpty) return 'No occurrences.';
+    final last = _lastOccurrence;
+    if (last != null) return 'Ends ${DateFormat.yMMMEd().format(last)}.';
+    return 'Never ends.';
   }
 
   @override
@@ -147,29 +142,37 @@ class _ExampleScreenState extends State<ExampleScreen> {
           _SectionCard(
             title: 'Next occurrences',
             subtitle:
-                'Up to 5 shown. '
-                'If today matches the rule, it appears as the first entry.',
-            child: _upcoming.isEmpty
-                ? Text(
-                    'No upcoming occurrences found.',
+                'Up to 5 shown, starting from today. '
+                'If today is an occurrence, it appears as the first entry.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_upcoming.isEmpty)
+                  Text(
+                    'No upcoming occurrences.',
                     style: TextStyle(
                       color: Theme.of(context).colorScheme.outline,
                       fontStyle: FontStyle.italic,
                     ),
                   )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (int i = 0; i < _upcoming.length; i++)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Text(
-                            '${i + 1}. ${DateFormat.yMMMEd().format(_upcoming[i])}',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ),
-                    ],
+                else
+                  for (var i = 0; i < _upcoming.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        '${i + 1}. ${DateFormat.yMMMEd().format(_upcoming[i])}',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ),
+                const SizedBox(height: 8),
+                Text(
+                  _endSummary,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.outline,
                   ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
 

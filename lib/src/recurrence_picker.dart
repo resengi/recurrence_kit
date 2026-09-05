@@ -1,37 +1,41 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
-import 'format_helpers.dart' as helpers;
-import 'recurrence_end_type.dart';
+import 'calendar.dart';
+import 'format_helpers.dart';
+import 'recurrence_engine.dart';
+import 'recurrence_model.dart';
 import 'recurrence_picker_theme.dart';
 import 'recurrence_rule.dart';
-import 'recurrence_type.dart';
 
-/// An inline recurrence rule editor widget.
+/// An inline recurrence rule editor.
 ///
-/// Provides controls for frequency, interval, day/week/month selection,
-/// and end conditions. Exposes the full [RecurrenceRule] — the parent
-/// receives updates via [onChanged] whenever the user modifies any part
-/// of the rule.
+/// A controlled widget: it renders [rule] and owns no recurrence state of
+/// its own. Every accepted edit builds one complete replacement rule from
+/// the rule current at that moment and passes it to [onChanged];
+/// interactions that make no edit (a cancelled date dialog, removing the
+/// only selected weekday, tapping the active frequency chip) emit
+/// nothing. If the parent does not supply the new rule, nothing changes.
+///
+/// Entering a mode seeds its values from the current [startDate] and
+/// [theme], carrying the current interval: Weekly starts on the start
+/// date's weekday, Monthly on its day of month (or its week position and
+/// weekday), Yearly on its month and day, "After" with
+/// [RecurrencePickerTheme.defaultEndAfterCount], and "On date" with the
+/// schedule's first date (the start date when the schedule has none).
+///
+/// [RecurrenceRule.includeStartDate] has no control here; every emitted
+/// rule preserves the incoming value.
 ///
 /// ```dart
 /// RecurrencePicker(
 ///   rule: _rule,
 ///   onChanged: (updated) => setState(() => _rule = updated),
 ///   startDate: DateTime(2025, 1, 15),
-///   theme: RecurrencePickerTheme(
-///     accentColor: Colors.indigo,
-///   ),
 /// )
 /// ```
-///
-/// ## End condition note
-///
-/// When [RecurrenceRule.endType] is [RecurrenceEndType.afterCount], the
-/// parent is responsible for calling
-/// [RecurrenceEngine.computeEndDateFromCount] at save time to pre-compute
-/// the concrete end date.
 class RecurrencePicker extends StatefulWidget {
-  /// Creates an inline recurrence rule editor.
   const RecurrencePicker({
     required this.rule,
     required this.onChanged,
@@ -41,22 +45,21 @@ class RecurrencePicker extends StatefulWidget {
     super.key,
   });
 
-  /// Current recurrence rule.
+  /// The rule being edited.
   final RecurrenceRule rule;
 
-  /// Called whenever the user changes any part of the rule.
+  /// Receives the replacement rule for every accepted edit.
   final ValueChanged<RecurrenceRule> onChanged;
 
-  /// The start date of the task/event — used to derive defaults for
-  /// monthly (day of month / weekday) and yearly (month + day).
+  /// The schedule's start date; seeds mode defaults and bounds the
+  /// end-date dialog.
   final DateTime startDate;
 
-  /// Which day starts the week in the day-of-week selector.
-  ///
-  /// Accepts [DateTime.sunday] (default) or [DateTime.monday].
+  /// The ISO weekday (1 = Monday … 7 = Sunday) shown first in the
+  /// weekday selector. Display order only.
   final int firstDayOfWeek;
 
-  /// Visual and functional configuration for the picker.
+  /// Visual and functional configuration.
   final RecurrencePickerTheme theme;
 
   @override
@@ -64,100 +67,96 @@ class RecurrencePicker extends StatefulWidget {
 }
 
 class _RecurrencePickerState extends State<RecurrencePicker> {
-  late RecurrenceType _type;
-  late int _interval;
-  late Set<int> _selectedDays;
+  RecurrenceRule get _rule => widget.rule;
 
-  // Monthly state.
-  late bool _monthlyRelative; // true = "2nd Tuesday", false = "on the 15th"
-  late int _monthDay;
-  late int _weekOfMonth;
-  late int _dayOfWeek;
+  DateTime get _start => calendarDate(widget.startDate);
 
-  // Yearly state.
-  late int _yearMonth;
-  late int _yearDay;
-
-  // End condition state.
-  late RecurrenceEndType _endType;
-  DateTime? _endDate;
-  late int _endAfterCount;
-
-  @override
-  void initState() {
-    super.initState();
-    _initFromRule(widget.rule);
-  }
-
-  @override
-  void didUpdateWidget(RecurrencePicker oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.rule != oldWidget.rule) {
-      _initFromRule(widget.rule);
+  /// Throws an [ArgumentError] for a configuration the picker cannot
+  /// honor: a count seed below 1, a horizon before the start date, or a
+  /// first weekday outside 1–7.
+  void _validateConfiguration() {
+    final count = widget.theme.defaultEndAfterCount;
+    if (count < 1) {
+      throw ArgumentError.value(
+        count,
+        'theme.defaultEndAfterCount',
+        'must be >= 1',
+      );
+    }
+    final horizon = widget.theme.datePickerLastDate;
+    if (horizon != null && calendarDate(horizon).isBefore(_start)) {
+      throw ArgumentError(
+        'theme.datePickerLastDate (${calendarDate(horizon)}) must not '
+        'precede the picker startDate ($_start)',
+      );
+    }
+    final firstDay = widget.firstDayOfWeek;
+    if (firstDay < DateTime.monday || firstDay > DateTime.sunday) {
+      throw ArgumentError.value(
+        firstDay,
+        'firstDayOfWeek',
+        'must be an ISO weekday 1-7',
+      );
     }
   }
 
-  void _initFromRule(RecurrenceRule rule) {
-    _type = rule.type;
-    _interval = rule.interval;
-    _selectedDays = Set<int>.from(rule.daysOfWeek ?? []);
+  void _emitPattern(RecurrencePattern pattern) =>
+      widget.onChanged(_rule.copyWith(pattern: pattern));
 
-    // Monthly defaults derived from start date.
-    final sd = widget.startDate;
-    _monthlyRelative = rule.isRelativeMonthly;
-    _monthDay = rule.monthDay ?? sd.day;
-    _weekOfMonth = rule.weekOfMonth ?? _weekOfMonthFromDate(sd);
-    _dayOfWeek = rule.dayOfWeek ?? sd.weekday;
+  void _emitEnd(RecurrenceEnd end) =>
+      widget.onChanged(_rule.copyWith(end: end));
 
-    // Yearly defaults derived from start date.
-    _yearMonth = rule.monthOfYear ?? sd.month;
-    _yearDay = rule.monthDay ?? sd.day;
-
-    // End conditions.
-    _endType = rule.endType;
-    _endDate = rule.endDate;
-    _endAfterCount = rule.endAfterCount ?? 10;
+  void _selectFrequency(_Frequency frequency) {
+    final pattern = _rule.pattern;
+    if (frequency.isActive(pattern)) return;
+    _emitPattern(frequency.seed(pattern.interval, _start));
   }
 
-  /// Compute which week-of-month occurrence the date falls on (1-4, or 5=last).
-  static int _weekOfMonthFromDate(DateTime date) {
-    final occurrence = ((date.day - 1) ~/ 7) + 1;
-    final daysInMonth = DateTime(date.year, date.month + 1, 0).day;
-    // If adding 7 days would exceed the month, this is the last occurrence.
-    if (date.day + 7 > daysInMonth) return 5;
-    return occurrence;
-  }
-
-  void _notifyChanged() {
-    widget.onChanged(
-      RecurrenceRule(
-        type: _type,
-        interval: _interval,
-        daysOfWeek: _type == RecurrenceType.weekly
-            ? (_selectedDays.toList()..sort())
-            : null,
-        monthDay: _type == RecurrenceType.monthly
-            ? (_monthlyRelative ? null : _monthDay)
-            : (_type == RecurrenceType.yearly ? _yearDay : null),
-        weekOfMonth: (_type == RecurrenceType.monthly && _monthlyRelative)
-            ? _weekOfMonth
-            : null,
-        dayOfWeek: (_type == RecurrenceType.monthly && _monthlyRelative)
-            ? _dayOfWeek
-            : null,
-        monthOfYear: _type == RecurrenceType.yearly ? _yearMonth : null,
-        endType: _endType,
-        endDate: _endType == RecurrenceEndType.onDate ? _endDate : null,
-        endAfterCount: _endType == RecurrenceEndType.afterCount
-            ? _endAfterCount
-            : null,
-      ),
+  void _selectOnDate() {
+    final unbounded = _rule.copyWith(end: const NeverEnds());
+    final first = RecurrenceEngine.nextOccurrenceOnOrAfter(
+      unbounded,
+      _start,
+      _start,
     );
+    _emitEnd(EndsOnDate(first ?? _start));
+  }
+
+  /// The default horizon: 100 years after the start date, on the same
+  /// month and day, or the month's last day when it is shorter.
+  DateTime get _defaultHorizon {
+    final year = _start.year + 100;
+    final day = math.min(_start.day, daysInMonth(year, _start.month));
+    return DateTime(year, _start.month, day);
+  }
+
+  /// Opens the end-date dialog. Its range runs from the start date to the
+  /// later of the horizon and the rule's existing end date; the picked
+  /// date is applied to the rule current when the dialog closes.
+  Future<void> _pickEndDate(EndsOnDate current) async {
+    final first = _start;
+    final configured = widget.theme.datePickerLastDate;
+    final horizon = configured == null
+        ? _defaultHorizon
+        : calendarDate(configured);
+    final last = current.date.isAfter(horizon) ? current.date : horizon;
+    final cursor = current.date.isBefore(first) ? first : current.date;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: cursor,
+      firstDate: first,
+      lastDate: last,
+    );
+    if (picked == null || !mounted) return;
+    widget.onChanged(widget.rule.copyWith(end: EndsOnDate(picked)));
   }
 
   @override
   Widget build(BuildContext context) {
+    _validateConfiguration();
     final theme = widget.theme;
+    final pattern = _rule.pattern;
+    final frequency = _frequencies.firstWhere((f) => f.isActive(pattern));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -171,119 +170,71 @@ class _RecurrencePickerState extends State<RecurrencePicker> {
           ),
         ),
         SizedBox(height: theme.spacingS),
-
-        // ── 1. Frequency selector ──
         _FrequencyChips(
-          selected: _type,
-          onChanged: (type) {
-            setState(() {
-              _type = type;
-              if (type == RecurrenceType.weekly && _selectedDays.isEmpty) {
-                _selectedDays = {widget.startDate.weekday};
-              }
-            });
-            _notifyChanged();
-          },
+          pattern: pattern,
+          onSelected: _selectFrequency,
           theme: theme,
         ),
         SizedBox(height: theme.spacingM),
-
-        // ── 2. Interval row ──
         _IntervalRow(
-          interval: _interval,
-          type: _type,
-          onDecrement: _interval > 1
-              ? () {
-                  setState(() => _interval--);
-                  _notifyChanged();
-                }
+          interval: pattern.interval,
+          unitLabel: pattern.interval == 1
+              ? frequency.unit
+              : '${frequency.unit}s',
+          onDecrement: pattern.interval > 1
+              ? () => _emitPattern(
+                  pattern.copyWith(interval: pattern.interval - 1),
+                )
               : null,
-          onIncrement: () {
-            setState(() => _interval++);
-            _notifyChanged();
-          },
+          onIncrement: () =>
+              _emitPattern(pattern.copyWith(interval: pattern.interval + 1)),
           theme: theme,
         ),
-
-        // ── 3. Frequency-specific options ──
-        if (_type == RecurrenceType.weekly) ...[
-          SizedBox(height: theme.spacingM),
-          Text(
-            'On days',
-            style: TextStyle(
-              fontSize: theme.fontSizeBody,
-              color: theme.textColor,
+        switch (pattern) {
+          Daily() => const SizedBox.shrink(),
+          Weekly weekly => Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(height: theme.spacingM),
+              Text('On days', style: _bodyStyle(theme)),
+              SizedBox(height: theme.spacingS),
+              _DayOfWeekSelector(
+                selectedDays: weekly.weekdays.toSet(),
+                onChanged: (days) {
+                  if (days.isEmpty) return;
+                  _emitPattern(weekly.copyWith(weekdays: days));
+                },
+                firstDayOfWeek: widget.firstDayOfWeek,
+                theme: theme,
+              ),
+            ],
+          ),
+          MonthlyByDay() || MonthlyByWeekday() => Padding(
+            padding: EdgeInsets.only(top: theme.spacingM),
+            child: _MonthlyOptions(
+              pattern: pattern,
+              startDate: _start,
+              onChanged: _emitPattern,
+              theme: theme,
             ),
           ),
-          SizedBox(height: theme.spacingS),
-          _DayOfWeekSelector(
-            selectedDays: _selectedDays,
-            onChanged: (days) {
-              setState(() => _selectedDays = days);
-              _notifyChanged();
-            },
-            firstDayOfWeek: widget.firstDayOfWeek,
-            theme: theme,
-          ),
-        ],
-        if (_type == RecurrenceType.monthly) ...[
-          SizedBox(height: theme.spacingM),
-          _MonthlyOptions(
-            monthlyRelative: _monthlyRelative,
-            monthDay: _monthDay,
-            weekOfMonth: _weekOfMonth,
-            dayOfWeek: _dayOfWeek,
-            startDate: widget.startDate,
-            onRelativeChanged: (v) {
-              setState(() => _monthlyRelative = v);
-              _notifyChanged();
-            },
-            onMonthDayChanged: (v) {
-              setState(() => _monthDay = v);
-              _notifyChanged();
-            },
-            onWeekOfMonthChanged: (v) {
-              setState(() => _weekOfMonth = v);
-              _notifyChanged();
-            },
-            onDayOfWeekChanged: (v) {
-              setState(() => _dayOfWeek = v);
-              _notifyChanged();
-            },
-            theme: theme,
-          ),
-        ],
-        if (_type == RecurrenceType.yearly) ...[
-          SizedBox(height: theme.spacingM),
-          Text(
-            'Every year on ${_kMonthNames[_yearMonth]} $_yearDay',
-            style: TextStyle(
-              fontSize: theme.fontSizeBody,
-              color: theme.secondaryTextColor,
+          Yearly yearly => Padding(
+            padding: EdgeInsets.only(top: theme.spacingM),
+            child: _YearlyOptions(
+              pattern: yearly,
+              onChanged: _emitPattern,
+              theme: theme,
             ),
           ),
-        ],
-
+        },
         SizedBox(height: theme.spacingL),
-
-        // ── 4. End condition ──
         _EndConditionControls(
-          endType: _endType,
-          endDate: _endDate,
-          endAfterCount: _endAfterCount,
-          startDate: widget.startDate,
-          onEndTypeChanged: (v) {
-            setState(() => _endType = v);
-            _notifyChanged();
-          },
-          onEndDateChanged: (v) {
-            setState(() => _endDate = v);
-            _notifyChanged();
-          },
-          onEndAfterCountChanged: (v) {
-            setState(() => _endAfterCount = v);
-            _notifyChanged();
-          },
+          end: _rule.end,
+          onNever: () => _emitEnd(const NeverEnds()),
+          onOnDate: _selectOnDate,
+          onAfter: () => _emitEnd(EndsAfterCount(theme.defaultEndAfterCount)),
+          onCountChanged: (count) => _emitEnd(EndsAfterCount(count)),
+          onPickDate: _pickEndDate,
           theme: theme,
         ),
       ],
@@ -291,183 +242,190 @@ class _RecurrencePickerState extends State<RecurrencePicker> {
   }
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Shared styles ────────────────────────────────────────────────────────────
 
-const _kMonthNames = [
-  '',
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
+TextStyle _bodyStyle(RecurrencePickerTheme theme) =>
+    TextStyle(fontSize: theme.fontSizeBody, color: theme.textColor);
+
+ButtonStyle _segmentedStyle(RecurrencePickerTheme theme) => ButtonStyle(
+  visualDensity: VisualDensity.compact,
+  textStyle: WidgetStatePropertyAll(TextStyle(fontSize: theme.fontSizeSmall)),
+);
+
+// ── Frequencies ──────────────────────────────────────────────────────────────
+
+/// One entry of the frequency chip row: which patterns it represents and
+/// the pattern it seeds when entered.
+class _Frequency {
+  const _Frequency({
+    required this.label,
+    required this.unit,
+    required this.isActive,
+    required this.seed,
+  });
+
+  final String label;
+
+  /// Singular interval unit; pluralized by appending "s".
+  final String unit;
+  final bool Function(RecurrencePattern pattern) isActive;
+  final RecurrencePattern Function(int interval, DateTime startDate) seed;
+}
+
+final List<_Frequency> _frequencies = [
+  _Frequency(
+    label: 'Daily',
+    unit: 'day',
+    isActive: (pattern) => pattern is Daily,
+    seed: (interval, _) => Daily(interval: interval),
+  ),
+  _Frequency(
+    label: 'Weekly',
+    unit: 'week',
+    isActive: (pattern) => pattern is Weekly,
+    seed: (interval, start) =>
+        Weekly(interval: interval, weekdays: [start.weekday]),
+  ),
+  _Frequency(
+    label: 'Monthly',
+    unit: 'month',
+    isActive: (pattern) =>
+        pattern is MonthlyByDay || pattern is MonthlyByWeekday,
+    seed: (interval, start) => MonthlyByDay(interval: interval, day: start.day),
+  ),
+  _Frequency(
+    label: 'Yearly',
+    unit: 'year',
+    isActive: (pattern) => pattern is Yearly,
+    seed: (interval, start) =>
+        Yearly(interval: interval, month: start.month, day: start.day),
+  ),
 ];
-
-// ── Frequency Chips ──────────────────────────────────────────────────────────
 
 class _FrequencyChips extends StatelessWidget {
   const _FrequencyChips({
-    required this.selected,
-    required this.onChanged,
+    required this.pattern,
+    required this.onSelected,
     required this.theme,
   });
 
-  final RecurrenceType selected;
-  final ValueChanged<RecurrenceType> onChanged;
+  final RecurrencePattern pattern;
+  final ValueChanged<_Frequency> onSelected;
   final RecurrencePickerTheme theme;
-
-  static String _label(RecurrenceType type) {
-    switch (type) {
-      case RecurrenceType.daily:
-        return 'Daily';
-      case RecurrenceType.weekly:
-        return 'Weekly';
-      case RecurrenceType.monthly:
-        return 'Monthly';
-      case RecurrenceType.yearly:
-        return 'Yearly';
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
-        children: RecurrenceType.values.map((t) {
-          final isSelected = t == selected;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: Text(_label(t)),
-              selected: isSelected,
-              onSelected: (_) => onChanged(t),
-              selectedColor: theme.accentColor.withValues(alpha: 0.2),
-              labelStyle: TextStyle(
-                fontSize: theme.fontSizeCompact,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                color: isSelected ? theme.accentColor : theme.textColor,
-              ),
-              side: BorderSide(
-                color: isSelected ? theme.accentColor : theme.borderColor,
-              ),
-              visualDensity: VisualDensity.compact,
+        children: [
+          for (final frequency in _frequencies)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _chip(frequency, frequency.isActive(pattern)),
             ),
-          );
-        }).toList(),
+        ],
       ),
     );
   }
+
+  Widget _chip(_Frequency frequency, bool isSelected) => ChoiceChip(
+    label: Text(frequency.label),
+    selected: isSelected,
+    onSelected: (_) => onSelected(frequency),
+    selectedColor: theme.accentColor.withValues(alpha: 0.2),
+    labelStyle: TextStyle(
+      fontSize: theme.fontSizeCompact,
+      fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+      color: isSelected ? theme.accentColor : theme.textColor,
+    ),
+    side: BorderSide(color: isSelected ? theme.accentColor : theme.borderColor),
+    visualDensity: VisualDensity.compact,
+  );
 }
 
-// ── Interval Row ─────────────────────────────────────────────────────────────
+// ── Interval row ─────────────────────────────────────────────────────────────
 
 class _IntervalRow extends StatelessWidget {
   const _IntervalRow({
     required this.interval,
-    required this.type,
+    required this.unitLabel,
     required this.onDecrement,
     required this.onIncrement,
     required this.theme,
   });
 
   final int interval;
-  final RecurrenceType type;
+  final String unitLabel;
   final VoidCallback? onDecrement;
   final VoidCallback onIncrement;
   final RecurrencePickerTheme theme;
-
-  static String _unitLabel(RecurrenceType type, int interval) {
-    switch (type) {
-      case RecurrenceType.daily:
-        return interval == 1 ? 'day' : 'days';
-      case RecurrenceType.weekly:
-        return interval == 1 ? 'week' : 'weeks';
-      case RecurrenceType.monthly:
-        return interval == 1 ? 'month' : 'months';
-      case RecurrenceType.yearly:
-        return interval == 1 ? 'year' : 'years';
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Text(
-          'Every',
-          style: TextStyle(
-            fontSize: theme.fontSizeBody,
-            color: theme.textColor,
-          ),
-        ),
+        Text('Every', style: _bodyStyle(theme)),
         SizedBox(width: theme.spacingS),
-        _StepperButton(
-          icon: Icons.remove_circle_outline,
-          onPressed: onDecrement,
+        _Stepper(
+          value: interval,
+          onDecrement: onDecrement,
+          onIncrement: onIncrement,
           theme: theme,
         ),
-        Text(
-          '$interval',
-          style: TextStyle(
-            fontSize: theme.fontSizeMedium,
-            fontWeight: FontWeight.w600,
-            color: theme.textColor,
-          ),
-        ),
-        _StepperButton(
-          icon: Icons.add_circle_outline,
-          onPressed: onIncrement,
-          theme: theme,
-        ),
-        Text(
-          _unitLabel(type, interval),
-          style: TextStyle(
-            fontSize: theme.fontSizeBody,
-            color: theme.textColor,
-          ),
-        ),
+        Text(unitLabel, style: _bodyStyle(theme)),
       ],
     );
   }
 }
 
-// ── Monthly Options ──────────────────────────────────────────────────────────
+// ── Monthly options ──────────────────────────────────────────────────────────
 
 class _MonthlyOptions extends StatelessWidget {
   const _MonthlyOptions({
-    required this.monthlyRelative,
-    required this.monthDay,
-    required this.weekOfMonth,
-    required this.dayOfWeek,
+    required this.pattern,
     required this.startDate,
-    required this.onRelativeChanged,
-    required this.onMonthDayChanged,
-    required this.onWeekOfMonthChanged,
-    required this.onDayOfWeekChanged,
+    required this.onChanged,
     required this.theme,
-  });
+  }) : assert(pattern is MonthlyByDay || pattern is MonthlyByWeekday);
 
-  final bool monthlyRelative;
-  final int monthDay;
-  final int weekOfMonth;
-  final int dayOfWeek;
+  /// A [MonthlyByDay] or [MonthlyByWeekday].
+  final RecurrencePattern pattern;
   final DateTime startDate;
-  final ValueChanged<bool> onRelativeChanged;
-  final ValueChanged<int> onMonthDayChanged;
-  final ValueChanged<int> onWeekOfMonthChanged;
-  final ValueChanged<int> onDayOfWeekChanged;
+  final ValueChanged<RecurrencePattern> onChanged;
   final RecurrencePickerTheme theme;
 
-  static String _shortDayName(int isoDay) {
-    const names = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    return names[isoDay];
+  String get _byDayLabel => switch (pattern) {
+    MonthlyByDay(:final day, :final missingDay)
+        when day == 31 && missingDay == MissingDay.useLastDay =>
+      'Last day',
+    MonthlyByDay(:final day) => 'On day $day',
+    _ => 'On day ${startDate.day}',
+  };
+
+  String get _byWeekdayLabel {
+    final (position, weekday) = switch (pattern) {
+      MonthlyByWeekday(:final position, :final weekday) => (position, weekday),
+      _ => (weekPositionOf(startDate), startDate.weekday),
+    };
+    return 'On the ${positionWord(position)} ${shortDayName(weekday)}';
+  }
+
+  void _selectMode(bool byWeekday) {
+    switch (pattern) {
+      case MonthlyByDay(:final interval) when byWeekday:
+        onChanged(
+          MonthlyByWeekday(
+            interval: interval,
+            position: weekPositionOf(startDate),
+            weekday: startDate.weekday,
+          ),
+        );
+      case MonthlyByWeekday(:final interval) when !byWeekday:
+        onChanged(MonthlyByDay(interval: interval, day: startDate.day));
+      default:
+        break;
+    }
   }
 
   @override
@@ -475,60 +433,75 @@ class _MonthlyOptions extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Toggle: fixed date vs. relative weekday.
         SegmentedButton<bool>(
           segments: [
-            ButtonSegment(
-              value: false,
-              label: Text(monthDay == 31 ? 'Last day' : 'On day $monthDay'),
-            ),
-            ButtonSegment(
-              value: true,
-              label: Text(
-                'On the ${helpers.ordinalWord(weekOfMonth)} ${_shortDayName(dayOfWeek)}',
-              ),
-            ),
+            ButtonSegment(value: false, label: Text(_byDayLabel)),
+            ButtonSegment(value: true, label: Text(_byWeekdayLabel)),
           ],
-          selected: {monthlyRelative},
-          onSelectionChanged: (set) => onRelativeChanged(set.first),
-          style: ButtonStyle(
-            visualDensity: VisualDensity.compact,
-            textStyle: WidgetStatePropertyAll(
-              TextStyle(fontSize: theme.fontSizeSmall),
-            ),
-          ),
+          selected: {pattern is MonthlyByWeekday},
+          onSelectionChanged: (selection) => _selectMode(selection.first),
+          style: _segmentedStyle(theme),
         ),
         SizedBox(height: theme.spacingS),
-        if (!monthlyRelative)
-          _buildMonthDayPicker()
-        else
-          _buildRelativeWeekdayPicker(),
+        if (pattern case MonthlyByDay byDay)
+          _MonthDayControls(
+            pattern: byDay,
+            startDate: startDate,
+            onChanged: onChanged,
+            theme: theme,
+          )
+        else if (pattern case MonthlyByWeekday byWeekday)
+          _RelativeWeekdayControls(
+            pattern: byWeekday,
+            onChanged: onChanged,
+            theme: theme,
+          ),
       ],
     );
   }
+}
 
-  Widget _buildMonthDayPicker() {
-    // Check if start date is the last day of a short month and user
-    // hasn't manually changed the day — offer "last day" shortcut.
-    final daysInStartMonth = DateTime(
-      startDate.year,
-      startDate.month + 1,
-      0,
-    ).day;
-    final isLastDayOfShortMonth =
-        startDate.day == daysInStartMonth &&
-        daysInStartMonth < 31 &&
-        monthDay == startDate.day;
+class _MonthDayControls extends StatelessWidget {
+  const _MonthDayControls({
+    required this.pattern,
+    required this.startDate,
+    required this.onChanged,
+    required this.theme,
+  });
 
+  final MonthlyByDay pattern;
+  final DateTime startDate;
+  final ValueChanged<RecurrencePattern> onChanged;
+  final RecurrencePickerTheme theme;
+
+  /// Offered when the start date is the last day of a month shorter than
+  /// 31 days and the rule still targets that day.
+  bool get _offersLastDayShortcut {
+    final length = daysInMonth(startDate.year, startDate.month);
+    return startDate.day == length && length < 31 && pattern.day == length;
+  }
+
+  String get _helperText => switch (pattern.missingDay) {
+    MissingDay.useLastDay when pattern.day == 31 =>
+      'Recurs on the last day of each month',
+    MissingDay.useLastDay when pattern.day == 30 =>
+      'For shorter months, recurs on the last day',
+    MissingDay.useLastDay =>
+      'For February in non-leap years, recurs on the 28th',
+    MissingDay.skip => 'Skipped in months without a ${ordinal(pattern.day)}',
+  };
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (isLastDayOfShortMonth) ...[
+        if (_offersLastDayShortcut) ...[
           SegmentedButton<bool>(
             segments: [
               ButtonSegment(
                 value: false,
-                label: Text('On the ${startDate.day}th'),
+                label: Text('On the ${ordinal(startDate.day)}'),
               ),
               const ButtonSegment(
                 value: true,
@@ -536,146 +509,252 @@ class _MonthlyOptions extends StatelessWidget {
               ),
             ],
             selected: const {false},
-            onSelectionChanged: (set) {
-              if (set.first) onMonthDayChanged(31);
+            onSelectionChanged: (selection) {
+              if (selection.first) {
+                onChanged(
+                  pattern.copyWith(day: 31, missingDay: MissingDay.useLastDay),
+                );
+              }
             },
-            style: ButtonStyle(
-              visualDensity: VisualDensity.compact,
-              textStyle: WidgetStatePropertyAll(
-                TextStyle(fontSize: theme.fontSizeSmall),
-              ),
-            ),
+            style: _segmentedStyle(theme),
           ),
           SizedBox(height: theme.spacingS),
         ],
         Row(
           children: [
-            Text(
-              'Day of month: ',
-              style: TextStyle(
-                fontSize: theme.fontSizeBody,
-                color: theme.textColor,
-              ),
-            ),
-            _StepperButton(
-              icon: Icons.remove_circle_outline,
-              onPressed: monthDay > 1
-                  ? () => onMonthDayChanged(monthDay - 1)
+            Text('Day of month: ', style: _bodyStyle(theme)),
+            _Stepper(
+              value: pattern.day,
+              onDecrement: pattern.day > 1
+                  ? () => onChanged(pattern.copyWith(day: pattern.day - 1))
                   : null,
-              theme: theme,
-            ),
-            Text(
-              '$monthDay',
-              style: TextStyle(
-                fontSize: theme.fontSizeMedium,
-                fontWeight: FontWeight.w600,
-                color: theme.textColor,
-              ),
-            ),
-            _StepperButton(
-              icon: Icons.add_circle_outline,
-              onPressed: monthDay < 31
-                  ? () => onMonthDayChanged(monthDay + 1)
+              onIncrement: pattern.day < 31
+                  ? () => onChanged(pattern.copyWith(day: pattern.day + 1))
                   : null,
               theme: theme,
             ),
           ],
         ),
-        if (monthDay >= 29) ...[
+        if (pattern.day >= 29) ...[
           SizedBox(height: theme.spacingXS),
           Text(
-            monthDay == 31
-                ? 'Recurs on the last day of each month'
-                : monthDay == 30
-                ? 'For shorter months, recurs on the last day'
-                : 'For February in non-leap years, recurs on the 28th',
+            _helperText,
             style: TextStyle(
               fontSize: theme.fontSizeSmall,
               fontStyle: FontStyle.italic,
               color: theme.secondaryTextColor,
             ),
           ),
+          SizedBox(height: theme.spacingS),
+          _MissingDayToggle(
+            label: 'In shorter months',
+            useLastDayLabel: 'Use last day',
+            value: pattern.missingDay,
+            onChanged: (missingDay) =>
+                onChanged(pattern.copyWith(missingDay: missingDay)),
+            theme: theme,
+          ),
         ],
       ],
     );
   }
+}
 
-  Widget _buildRelativeWeekdayPicker() {
-    const ordinals = [
-      (1, '1st'),
-      (2, '2nd'),
-      (3, '3rd'),
-      (4, '4th'),
-      (5, 'Last'),
-    ];
-    const weekdays = [
-      (1, 'Monday'),
-      (2, 'Tuesday'),
-      (3, 'Wednesday'),
-      (4, 'Thursday'),
-      (5, 'Friday'),
-      (6, 'Saturday'),
-      (7, 'Sunday'),
-    ];
+class _RelativeWeekdayControls extends StatelessWidget {
+  const _RelativeWeekdayControls({
+    required this.pattern,
+    required this.onChanged,
+    required this.theme,
+  });
 
+  final MonthlyByWeekday pattern;
+  final ValueChanged<RecurrencePattern> onChanged;
+  final RecurrencePickerTheme theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = _bodyStyle(theme);
     return Row(
       children: [
-        DropdownButton<int>(
-          value: weekOfMonth,
-          items: ordinals
-              .map((e) => DropdownMenuItem(value: e.$1, child: Text(e.$2)))
-              .toList(),
-          onChanged: (v) {
-            if (v != null) onWeekOfMonthChanged(v);
+        DropdownButton<WeekPosition>(
+          value: pattern.position,
+          items: [
+            for (final position in WeekPosition.values)
+              DropdownMenuItem(
+                value: position,
+                child: Text(
+                  position == WeekPosition.last
+                      ? 'Last'
+                      : positionWord(position),
+                ),
+              ),
+          ],
+          onChanged: (position) {
+            if (position != null) {
+              onChanged(pattern.copyWith(position: position));
+            }
           },
           underline: const SizedBox(),
-          style: TextStyle(
-            fontSize: theme.fontSizeBody,
-            color: theme.textColor,
-          ),
+          style: style,
         ),
         SizedBox(width: theme.spacingS),
         DropdownButton<int>(
-          value: dayOfWeek,
-          items: weekdays
-              .map((e) => DropdownMenuItem(value: e.$1, child: Text(e.$2)))
-              .toList(),
-          onChanged: (v) {
-            if (v != null) onDayOfWeekChanged(v);
+          value: pattern.weekday,
+          items: [
+            for (
+              var weekday = DateTime.monday;
+              weekday <= DateTime.sunday;
+              weekday++
+            )
+              DropdownMenuItem(
+                value: weekday,
+                child: Text(longDayName(weekday)),
+              ),
+          ],
+          onChanged: (weekday) {
+            if (weekday != null) onChanged(pattern.copyWith(weekday: weekday));
           },
           underline: const SizedBox(),
-          style: TextStyle(
-            fontSize: theme.fontSizeBody,
-            color: theme.textColor,
-          ),
+          style: style,
         ),
       ],
     );
   }
 }
 
-// ── End Condition Controls ───────────────────────────────────────────────────
+// ── Yearly options ───────────────────────────────────────────────────────────
 
-class _EndConditionControls extends StatelessWidget {
-  const _EndConditionControls({
-    required this.endType,
-    required this.endDate,
-    required this.endAfterCount,
-    required this.startDate,
-    required this.onEndTypeChanged,
-    required this.onEndDateChanged,
-    required this.onEndAfterCountChanged,
+class _YearlyOptions extends StatelessWidget {
+  const _YearlyOptions({
+    required this.pattern,
+    required this.onChanged,
     required this.theme,
   });
 
-  final RecurrenceEndType endType;
-  final DateTime? endDate;
-  final int endAfterCount;
-  final DateTime startDate;
-  final ValueChanged<RecurrenceEndType> onEndTypeChanged;
-  final ValueChanged<DateTime> onEndDateChanged;
-  final ValueChanged<int> onEndAfterCountChanged;
+  final Yearly pattern;
+  final ValueChanged<RecurrencePattern> onChanged;
   final RecurrencePickerTheme theme;
+
+  bool get _isLeapDay =>
+      pattern.month == DateTime.february && pattern.day == 29;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'On ${monthName(pattern.month)} ${pattern.day}',
+          style: TextStyle(
+            fontSize: theme.fontSizeBody,
+            color: theme.secondaryTextColor,
+          ),
+        ),
+        if (_isLeapDay) ...[
+          SizedBox(height: theme.spacingS),
+          _MissingDayToggle(
+            label: 'In non-leap years',
+            useLastDayLabel: 'Feb 28',
+            value: pattern.missingDay,
+            onChanged: (missingDay) =>
+                onChanged(pattern.copyWith(missingDay: missingDay)),
+            theme: theme,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ── Missing-day toggle ───────────────────────────────────────────────────────
+
+class _MissingDayToggle extends StatelessWidget {
+  const _MissingDayToggle({
+    required this.label,
+    required this.useLastDayLabel,
+    required this.value,
+    required this.onChanged,
+    required this.theme,
+  });
+
+  final String label;
+  final String useLastDayLabel;
+  final MissingDay value;
+  final ValueChanged<MissingDay> onChanged;
+  final RecurrencePickerTheme theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: theme.fontSizeSmall,
+            color: theme.secondaryTextColor,
+          ),
+        ),
+        SizedBox(height: theme.spacingXS),
+        SegmentedButton<MissingDay>(
+          segments: [
+            ButtonSegment(
+              value: MissingDay.useLastDay,
+              label: Text(useLastDayLabel),
+            ),
+            const ButtonSegment(value: MissingDay.skip, label: Text('Skip')),
+          ],
+          selected: {value},
+          onSelectionChanged: (selection) => onChanged(selection.first),
+          style: _segmentedStyle(theme),
+        ),
+      ],
+    );
+  }
+}
+
+// ── End condition ────────────────────────────────────────────────────────────
+
+class _EndConditionControls extends StatelessWidget {
+  const _EndConditionControls({
+    required this.end,
+    required this.onNever,
+    required this.onOnDate,
+    required this.onAfter,
+    required this.onCountChanged,
+    required this.onPickDate,
+    required this.theme,
+  });
+
+  final RecurrenceEnd end;
+  final VoidCallback onNever;
+  final VoidCallback onOnDate;
+  final VoidCallback onAfter;
+  final ValueChanged<int> onCountChanged;
+  final ValueChanged<EndsOnDate> onPickDate;
+  final RecurrencePickerTheme theme;
+
+  static Type _kindOf(RecurrenceEnd end) => switch (end) {
+    NeverEnds() => NeverEnds,
+    EndsOnDate() => EndsOnDate,
+    EndsAfterCount() => EndsAfterCount,
+  };
+
+  void _select(Type? kind) {
+    if (kind == _kindOf(end)) return;
+    if (kind == NeverEnds) onNever();
+    if (kind == EndsOnDate) onOnDate();
+    if (kind == EndsAfterCount) onAfter();
+  }
+
+  Widget _tile(String label, Type kind) => RadioListTile<Type>(
+    title: Text(label, style: _bodyStyle(theme)),
+    value: kind,
+    activeColor: theme.accentColor,
+    dense: true,
+    contentPadding: EdgeInsets.zero,
+    visualDensity: VisualDensity.compact,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -691,59 +770,40 @@ class _EndConditionControls extends StatelessWidget {
           ),
         ),
         SizedBox(height: theme.spacingXS),
-
-        RadioGroup<RecurrenceEndType>(
-          groupValue: endType,
-          onChanged: (v) {
-            if (v != null) onEndTypeChanged(v);
-          },
+        RadioGroup<Type>(
+          groupValue: _kindOf(end),
+          onChanged: _select,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Never.
-              RadioListTile<RecurrenceEndType>(
-                title: Text(
-                  'Never',
-                  style: TextStyle(fontSize: theme.fontSizeBody),
-                ),
-                value: RecurrenceEndType.never,
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-              ),
-
-              // On date.
-              RadioListTile<RecurrenceEndType>(
-                title: Text(
-                  'On date',
-                  style: TextStyle(fontSize: theme.fontSizeBody),
-                ),
-                value: RecurrenceEndType.onDate,
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-              ),
-              if (endType == RecurrenceEndType.onDate)
+              _tile('Never', NeverEnds),
+              _tile('On date', EndsOnDate),
+              if (end case EndsOnDate onDate)
                 Padding(
                   padding: const EdgeInsets.only(left: 32, bottom: 4),
-                  child: _buildEndDatePicker(context),
+                  child: _EndDateRow(
+                    end: onDate,
+                    onTap: () => onPickDate(onDate),
+                    theme: theme,
+                  ),
                 ),
-
-              // After count.
-              RadioListTile<RecurrenceEndType>(
-                title: Text(
-                  'After',
-                  style: TextStyle(fontSize: theme.fontSizeBody),
-                ),
-                value: RecurrenceEndType.afterCount,
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-              ),
-              if (endType == RecurrenceEndType.afterCount)
+              _tile('After', EndsAfterCount),
+              if (end case EndsAfterCount(:final count))
                 Padding(
                   padding: const EdgeInsets.only(left: 32),
-                  child: _buildEndAfterCountRow(),
+                  child: Row(
+                    children: [
+                      _Stepper(
+                        value: count,
+                        onDecrement: count > 1
+                            ? () => onCountChanged(count - 1)
+                            : null,
+                        onIncrement: () => onCountChanged(count + 1),
+                        theme: theme,
+                      ),
+                      Text('occurrences', style: _bodyStyle(theme)),
+                    ],
+                  ),
                 ),
             ],
           ),
@@ -751,53 +811,63 @@ class _EndConditionControls extends StatelessWidget {
       ],
     );
   }
+}
 
-  Widget _buildEndDatePicker(BuildContext context) {
-    final formattedDate = endDate != null
-        ? (theme.dateFormatter?.call(endDate!) ??
-              helpers.formatFullDate(endDate!))
-        : null;
+class _EndDateRow extends StatelessWidget {
+  const _EndDateRow({
+    required this.end,
+    required this.onTap,
+    required this.theme,
+  });
 
+  final EndsOnDate end;
+  final VoidCallback onTap;
+  final RecurrencePickerTheme theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final formatted =
+        theme.dateFormatter?.call(end.date) ?? formatFullDate(end.date);
     return GestureDetector(
-      onTap: () async {
-        final picked = await showDatePicker(
-          context: context,
-          initialDate: endDate ?? startDate.add(const Duration(days: 30)),
-          firstDate: startDate,
-          lastDate: DateTime(theme.datePickerEndYear),
-        );
-        if (picked != null) onEndDateChanged(picked);
-      },
+      onTap: onTap,
       child: Row(
         children: [
           Icon(Icons.calendar_today, size: 16, color: theme.accentColor),
           SizedBox(width: theme.spacingS),
-          Text(
-            formattedDate ?? 'Select end date',
-            style: TextStyle(
-              fontSize: theme.fontSizeBody,
-              color: endDate != null
-                  ? theme.textColor
-                  : theme.secondaryTextColor,
-            ),
-          ),
+          Text(formatted, style: _bodyStyle(theme)),
         ],
       ),
     );
   }
+}
 
-  Widget _buildEndAfterCountRow() {
+// ── Shared small widgets ─────────────────────────────────────────────────────
+
+class _Stepper extends StatelessWidget {
+  const _Stepper({
+    required this.value,
+    required this.onDecrement,
+    required this.onIncrement,
+    required this.theme,
+  });
+
+  final int value;
+  final VoidCallback? onDecrement;
+  final VoidCallback? onIncrement;
+  final RecurrencePickerTheme theme;
+
+  @override
+  Widget build(BuildContext context) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         _StepperButton(
           icon: Icons.remove_circle_outline,
-          onPressed: endAfterCount > 1
-              ? () => onEndAfterCountChanged(endAfterCount - 1)
-              : null,
+          onPressed: onDecrement,
           theme: theme,
         ),
         Text(
-          '$endAfterCount',
+          '$value',
           style: TextStyle(
             fontSize: theme.fontSizeMedium,
             fontWeight: FontWeight.w600,
@@ -806,22 +876,13 @@ class _EndConditionControls extends StatelessWidget {
         ),
         _StepperButton(
           icon: Icons.add_circle_outline,
-          onPressed: () => onEndAfterCountChanged(endAfterCount + 1),
+          onPressed: onIncrement,
           theme: theme,
-        ),
-        Text(
-          'occurrences',
-          style: TextStyle(
-            fontSize: theme.fontSizeBody,
-            color: theme.textColor,
-          ),
         ),
       ],
     );
   }
 }
-
-// ── Shared Small Widgets ─────────────────────────────────────────────────────
 
 class _StepperButton extends StatelessWidget {
   const _StepperButton({
@@ -850,77 +911,70 @@ class _DayOfWeekSelector extends StatelessWidget {
   const _DayOfWeekSelector({
     required this.selectedDays,
     required this.onChanged,
+    required this.firstDayOfWeek,
     required this.theme,
-    this.firstDayOfWeek = DateTime.sunday,
   });
 
   final Set<int> selectedDays;
+
+  /// Receives the toggled set, which may be empty.
   final ValueChanged<Set<int>> onChanged;
   final int firstDayOfWeek;
   final RecurrencePickerTheme theme;
 
-  // ISO weekday labels: Mon=1..Sun=7.
-  static const _dayLabels = {
-    1: 'M',
-    2: 'T',
-    3: 'W',
-    4: 'T',
-    5: 'F',
-    6: 'S',
-    7: 'S',
+  static const _dayLetters = {
+    DateTime.monday: 'M',
+    DateTime.tuesday: 'T',
+    DateTime.wednesday: 'W',
+    DateTime.thursday: 'T',
+    DateTime.friday: 'F',
+    DateTime.saturday: 'S',
+    DateTime.sunday: 'S',
   };
 
-  /// Returns ISO weekday values ordered starting from [firstDayOfWeek].
-  List<int> get _orderedDays {
-    final start = firstDayOfWeek == DateTime.sunday ? 7 : firstDayOfWeek;
-    return List.generate(7, (i) => ((start - 1 + i) % 7) + 1);
-  }
+  /// ISO weekdays in display order, starting from [firstDayOfWeek].
+  List<int> get _orderedDays =>
+      List.generate(7, (i) => (firstDayOfWeek - 1 + i) % 7 + 1);
 
   @override
   Widget build(BuildContext context) {
-    final days = _orderedDays;
-
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: List.generate(7, (i) {
-        final day = days[i];
-        final selected = selectedDays.contains(day);
+      children: [for (final day in _orderedDays) _dayCircle(day)],
+    );
+  }
 
-        return GestureDetector(
-          onTap: () {
-            final updated = Set<int>.from(selectedDays);
-            if (selected && updated.length > 1) {
-              updated.remove(day);
-            } else {
-              updated.add(day);
-            }
-            onChanged(updated);
-          },
-          child: Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: selected
-                  ? theme.accentColor.withValues(alpha: 0.2)
-                  : Colors.transparent,
-              border: Border.all(
-                color: selected ? theme.accentColor : theme.borderColor,
-                width: selected ? 1.5 : 1.0,
-              ),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              _dayLabels[day]!,
-              style: TextStyle(
-                fontSize: theme.fontSizeCompact,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-                color: selected ? theme.accentColor : theme.secondaryTextColor,
-              ),
-            ),
+  Widget _dayCircle(int day) {
+    final selected = selectedDays.contains(day);
+    return GestureDetector(
+      onTap: () {
+        final toggled = Set<int>.from(selectedDays);
+        if (!toggled.remove(day)) toggled.add(day);
+        onChanged(toggled);
+      },
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: selected
+              ? theme.accentColor.withValues(alpha: 0.2)
+              : Colors.transparent,
+          border: Border.all(
+            color: selected ? theme.accentColor : theme.borderColor,
+            width: selected ? 1.5 : 1.0,
           ),
-        );
-      }),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          _dayLetters[day]!,
+          style: TextStyle(
+            fontSize: theme.fontSizeCompact,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            color: selected ? theme.accentColor : theme.secondaryTextColor,
+          ),
+        ),
+      ),
     );
   }
 }
