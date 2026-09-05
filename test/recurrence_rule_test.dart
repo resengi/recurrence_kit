@@ -1,412 +1,202 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:recurrence_kit/recurrence_kit.dart';
 
+RecurrenceRule _rule(
+  RecurrencePattern pattern, {
+  RecurrenceEnd end = const NeverEnds(),
+  bool includeStartDate = false,
+}) => RecurrenceRule(
+  pattern: pattern,
+  end: end,
+  includeStartDate: includeStartDate,
+);
+
 void main() {
-  // ── fromJson / toJson round-trip ────────────────────────────────────────
-
-  group('fromJson / toJson round-trip', () {
-    test('daily rule', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.daily,
-        interval: 3,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 6, 15),
-      );
-      expect(RecurrenceRule.fromJson(rule.toJson()), equals(rule));
+  group('RecurrenceEnd', () {
+    test('EndsOnDate keeps calendar components and drops time and UTC', () {
+      final end = EndsOnDate(DateTime.utc(2025, 3, 9, 23, 30));
+      expect(end.date, DateTime(2025, 3, 9));
+      expect(end.date.isUtc, isFalse);
+      expect(EndsOnDate(DateTime(2025, 3, 9, 14)).date, DateTime(2025, 3, 9));
     });
 
-    test('weekly rule with multiple days', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        interval: 2,
-        daysOfWeek: [1, 3, 5],
-        endType: RecurrenceEndType.afterCount,
-        endAfterCount: 10,
-        endDate: DateTime(2025, 12, 1),
-      );
-      expect(RecurrenceRule.fromJson(rule.toJson()), equals(rule));
+    test('EndsAfterCount requires a count of at least 1', () {
+      expect(() => EndsAfterCount(0), throwsArgumentError);
+      expect(EndsAfterCount(1).count, 1);
     });
 
-    test('monthly fixed date rule', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        interval: 1,
-        monthDay: 15,
+    test('structural equality', () {
+      expect(const NeverEnds(), const NeverEnds());
+      expect(const NeverEnds().hashCode, const NeverEnds().hashCode);
+      expect(
+        EndsOnDate(DateTime(2025, 1, 1)),
+        EndsOnDate(DateTime(2025, 1, 1)),
       );
-      expect(RecurrenceRule.fromJson(rule.toJson()), equals(rule));
-    });
-
-    test('monthly relative weekday rule', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        interval: 2,
-        weekOfMonth: 3,
-        dayOfWeek: 2,
+      expect(
+        EndsOnDate(DateTime(2025, 1, 1)),
+        isNot(EndsOnDate(DateTime(2025, 1, 2))),
       );
-      expect(RecurrenceRule.fromJson(rule.toJson()), equals(rule));
-    });
-
-    test('yearly rule', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        interval: 1,
-        monthOfYear: 3,
-        monthDay: 14,
-      );
-      expect(RecurrenceRule.fromJson(rule.toJson()), equals(rule));
+      expect(EndsAfterCount(3), EndsAfterCount(3));
+      expect(EndsAfterCount(3), isNot(EndsAfterCount(4)));
+      expect(const NeverEnds(), isNot(EndsAfterCount(1)));
     });
   });
 
-  // ── fromJson defaults ──────────────────────────────────────────────────
-
-  group('fromJson defaults', () {
-    test('missing keys fall back to defaults', () {
-      final rule = RecurrenceRule.fromJson({'type': 'daily'});
-      expect(rule.type, RecurrenceType.daily);
-      expect(rule.interval, 1);
-      expect(rule.daysOfWeek, isNull);
-      expect(rule.endType, RecurrenceEndType.never);
-      expect(rule.endDate, isNull);
-      expect(rule.endAfterCount, isNull);
+  group('RecurrenceRule', () {
+    test('defaults includeStartDate to false', () {
+      expect(_rule(Daily()).includeStartDate, isFalse);
     });
 
-    test('malformed type falls back to daily', () {
-      final rule = RecurrenceRule.fromJson({'type': 'biweekly'});
-      expect(rule.type, RecurrenceType.daily);
+    test('equality covers pattern, end, and includeStartDate', () {
+      expect(_rule(Daily()), _rule(Daily()));
+      expect(_rule(Daily()).hashCode, _rule(Daily()).hashCode);
+      expect(_rule(Daily()), isNot(_rule(Daily(interval: 2))));
+      expect(_rule(Daily()), isNot(_rule(Daily(), end: EndsAfterCount(1))));
+      expect(_rule(Daily()), isNot(_rule(Daily(), includeStartDate: true)));
     });
 
-    test('missing endType defaults to never', () {
-      final rule = RecurrenceRule.fromJson({
-        'type': 'weekly',
-        'daysOfWeek': [1, 5],
-      });
-      expect(rule.endType, RecurrenceEndType.never);
+    test('copyWith replaces each part independently', () {
+      final base = _rule(Daily(), end: EndsAfterCount(3));
+      expect(
+        base.copyWith(pattern: Weekly(weekdays: [1])),
+        _rule(Weekly(weekdays: [1]), end: EndsAfterCount(3)),
+      );
+      expect(base.copyWith(end: const NeverEnds()), _rule(Daily()));
+      expect(
+        base.copyWith(includeStartDate: true),
+        _rule(Daily(), end: EndsAfterCount(3), includeStartDate: true),
+      );
+      expect(base.copyWith(), base);
     });
   });
-
-  // ── copyWith ───────────────────────────────────────────────────────────
-
-  group('copyWith', () {
-    final base = RecurrenceRule(
-      type: RecurrenceType.weekly,
-      interval: 2,
-      daysOfWeek: [1, 3],
-      endType: RecurrenceEndType.afterCount,
-      endAfterCount: 5,
-      endDate: DateTime(2025, 12, 31),
-    );
-
-    test('overrides a single field', () {
-      final updated = base.copyWith(interval: 4);
-      expect(updated.interval, 4);
-      expect(updated.type, base.type);
-      expect(updated.daysOfWeek, base.daysOfWeek);
-      expect(updated.endType, base.endType);
-    });
-
-    test('clearDaysOfWeek nullifies daysOfWeek', () {
-      final updated = base.copyWith(clearDaysOfWeek: true);
-      expect(updated.daysOfWeek, isNull);
-      expect(updated.interval, base.interval);
-    });
-
-    test('clearEndDate nullifies endDate', () {
-      final updated = base.copyWith(clearEndDate: true);
-      expect(updated.endDate, isNull);
-      expect(updated.endAfterCount, base.endAfterCount);
-    });
-
-    test('clearEndType resets to never', () {
-      final updated = base.copyWith(clearEndType: true);
-      expect(updated.endType, RecurrenceEndType.never);
-    });
-
-    test('clearEndAfterCount nullifies endAfterCount', () {
-      final updated = base.copyWith(clearEndAfterCount: true);
-      expect(updated.endAfterCount, isNull);
-      expect(updated.endType, base.endType);
-    });
-
-    test('clearMonthDay nullifies monthDay', () {
-      final withMonthDay = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        monthDay: 15,
-      );
-      final updated = withMonthDay.copyWith(clearMonthDay: true);
-      expect(updated.monthDay, isNull);
-    });
-
-    test('clearWeekOfMonth and clearDayOfWeek nullify relative fields', () {
-      final relative = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 2,
-        dayOfWeek: 3,
-      );
-      final updated = relative.copyWith(
-        clearWeekOfMonth: true,
-        clearDayOfWeek: true,
-      );
-      expect(updated.weekOfMonth, isNull);
-      expect(updated.dayOfWeek, isNull);
-    });
-
-    test('clearMonthOfYear nullifies monthOfYear', () {
-      final yearly = RecurrenceRule(
-        type: RecurrenceType.yearly,
-        monthOfYear: 6,
-        monthDay: 1,
-      );
-      final updated = yearly.copyWith(clearMonthOfYear: true);
-      expect(updated.monthOfYear, isNull);
-    });
-  });
-
-  // ── isRelativeMonthly ──────────────────────────────────────────────────
-
-  group('isRelativeMonthly', () {
-    test('true when monthly with weekOfMonth and dayOfWeek', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.monthly,
-        weekOfMonth: 2,
-        dayOfWeek: 2,
-      );
-      expect(rule.isRelativeMonthly, isTrue);
-    });
-
-    test('false when monthly with only monthDay', () {
-      final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 15);
-      expect(rule.isRelativeMonthly, isFalse);
-    });
-
-    test('false for non-monthly type even with weekOfMonth/dayOfWeek', () {
-      final rule = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        weekOfMonth: 2,
-        dayOfWeek: 2,
-      );
-      expect(rule.isRelativeMonthly, isFalse);
-    });
-  });
-
-  // ── displayText ────────────────────────────────────────────────────────
 
   group('displayText', () {
-    group('daily', () {
-      test('interval 1', () {
-        final rule = RecurrenceRule(type: RecurrenceType.daily);
-        expect(rule.displayText, 'Every day');
-      });
-
-      test('interval > 1', () {
-        final rule = RecurrenceRule(type: RecurrenceType.daily, interval: 3);
-        expect(rule.displayText, 'Every 3 days');
-      });
+    test('daily', () {
+      expect(_rule(Daily()).displayText, 'Every day');
+      expect(_rule(Daily(interval: 3)).displayText, 'Every 3 days');
     });
 
-    group('weekly', () {
-      test('single day', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.weekly,
-          daysOfWeek: [1],
-        );
-        expect(rule.displayText, 'Mon');
-      });
-
-      test('multiple days sorted', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.weekly,
-          daysOfWeek: [5, 1, 3],
-        );
-        expect(rule.displayText, 'Mon, Wed, Fri');
-      });
-
-      test('interval > 1', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.weekly,
-          interval: 2,
-          daysOfWeek: [1, 5],
-        );
-        expect(rule.displayText, 'Every 2 weeks: Mon, Fri');
-      });
-
-      test('empty daysOfWeek', () {
-        final rule = RecurrenceRule(type: RecurrenceType.weekly);
-        expect(rule.displayText, 'Weekly');
-      });
-    });
-
-    group('monthly', () {
-      test('fixed date', () {
-        final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 15);
-        expect(rule.displayText, 'Monthly on the 15th');
-      });
-
-      test('monthDay 31 shows last day', () {
-        final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 31);
-        expect(rule.displayText, 'Monthly on the last day');
-      });
-
-      test('monthDay 29 shows parenthetical note', () {
-        final rule = RecurrenceRule(type: RecurrenceType.monthly, monthDay: 29);
-        expect(
-          rule.displayText,
-          'Monthly on the 29th (last day in shorter months)',
-        );
-      });
-
-      test('relative weekday', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.monthly,
-          weekOfMonth: 2,
-          dayOfWeek: 2,
-        );
-        expect(rule.displayText, 'Monthly on the 2nd Tuesday');
-      });
-
-      test('last weekday', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.monthly,
-          weekOfMonth: 5,
-          dayOfWeek: 5,
-        );
-        expect(rule.displayText, 'Monthly on the last Friday');
-      });
-
-      test('interval > 1', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.monthly,
-          interval: 3,
-          monthDay: 1,
-        );
-        expect(rule.displayText, 'Every 3 months on the 1st');
-      });
-    });
-
-    group('yearly', () {
-      test('basic', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.yearly,
-          monthOfYear: 1,
-          monthDay: 15,
-        );
-        expect(rule.displayText, 'Yearly on January 15');
-      });
-
-      test('interval > 1', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.yearly,
-          interval: 2,
-          monthOfYear: 7,
-          monthDay: 4,
-        );
-        expect(rule.displayText, 'Every 2 years on July 4');
-      });
-
-      test('Feb 29 shows parenthetical note', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.yearly,
-          monthOfYear: 2,
-          monthDay: 29,
-        );
-        expect(
-          rule.displayText,
-          'Yearly on February 29 (last day in shorter years)',
-        );
-      });
-    });
-
-    group('end suffixes', () {
-      test('never shows no suffix', () {
-        final rule = RecurrenceRule(type: RecurrenceType.daily);
-        expect(rule.displayText, 'Every day');
-      });
-
-      test('onDate shows until date', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.onDate,
-          endDate: DateTime(2025, 3, 15),
-        );
-        expect(rule.displayText, 'Every day · until 3/15/2025');
-      });
-
-      test('afterCount shows count', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.afterCount,
-          endAfterCount: 10,
-        );
-        expect(rule.displayText, 'Every day · for 10 times');
-      });
-
-      test('onDate with null endDate shows no suffix', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.onDate,
-        );
-        expect(rule.displayText, 'Every day');
-      });
-
-      test('afterCount with null count shows no suffix', () {
-        final rule = RecurrenceRule(
-          type: RecurrenceType.daily,
-          endType: RecurrenceEndType.afterCount,
-        );
-        expect(rule.displayText, 'Every day');
-      });
-    });
-  });
-
-  // ── == and hashCode ────────────────────────────────────────────────────
-
-  group('equality and hashCode', () {
-    test('identical rules are equal', () {
-      final a = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        interval: 2,
-        daysOfWeek: [1, 3],
+    test('weekly', () {
+      expect(_rule(Weekly(weekdays: [5, 1])).displayText, 'Mon, Fri');
+      expect(
+        _rule(
+          Weekly(interval: 2, weekdays: [1, 5]),
+          end: EndsAfterCount(10),
+        ).displayText,
+        'Every 2 weeks: Mon, Fri · for 10 times',
       );
-      final b = RecurrenceRule(
-        type: RecurrenceType.weekly,
-        interval: 2,
-        daysOfWeek: [1, 3],
+    });
+
+    test('monthly by day below 29', () {
+      expect(_rule(MonthlyByDay(day: 1)).displayText, 'Monthly on the 1st');
+      expect(_rule(MonthlyByDay(day: 2)).displayText, 'Monthly on the 2nd');
+      expect(_rule(MonthlyByDay(day: 3)).displayText, 'Monthly on the 3rd');
+      expect(_rule(MonthlyByDay(day: 11)).displayText, 'Monthly on the 11th');
+      expect(_rule(MonthlyByDay(day: 12)).displayText, 'Monthly on the 12th');
+      expect(_rule(MonthlyByDay(day: 13)).displayText, 'Monthly on the 13th');
+      expect(_rule(MonthlyByDay(day: 22)).displayText, 'Monthly on the 22nd');
+      expect(
+        _rule(MonthlyByDay(interval: 2, day: 15)).displayText,
+        'Every 2 months on the 15th',
       );
-      expect(a, equals(b));
-      expect(a.hashCode, equals(b.hashCode));
-    });
-
-    test('differing type breaks equality', () {
-      final a = RecurrenceRule(type: RecurrenceType.daily);
-      final b = RecurrenceRule(type: RecurrenceType.weekly);
-      expect(a, isNot(equals(b)));
-    });
-
-    test('differing interval breaks equality', () {
-      final a = RecurrenceRule(type: RecurrenceType.daily, interval: 1);
-      final b = RecurrenceRule(type: RecurrenceType.daily, interval: 2);
-      expect(a, isNot(equals(b)));
-    });
-
-    test('daysOfWeek order matters', () {
-      final a = RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1, 3]);
-      final b = RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [3, 1]);
-      expect(a, isNot(equals(b)));
-    });
-
-    test('null vs non-null daysOfWeek breaks equality', () {
-      final a = RecurrenceRule(type: RecurrenceType.weekly);
-      final b = RecurrenceRule(type: RecurrenceType.weekly, daysOfWeek: [1]);
-      expect(a, isNot(equals(b)));
-    });
-
-    test('differing endType breaks equality', () {
-      final a = RecurrenceRule(type: RecurrenceType.daily);
-      final b = RecurrenceRule(
-        type: RecurrenceType.daily,
-        endType: RecurrenceEndType.onDate,
-        endDate: DateTime(2025, 1, 1),
+      expect(
+        _rule(MonthlyByDay(day: 15, missingDay: MissingDay.skip)).displayText,
+        'Monthly on the 15th',
       );
-      expect(a, isNot(equals(b)));
+    });
+
+    test('monthly by day 29-31 describes the missing-day behavior', () {
+      expect(
+        _rule(MonthlyByDay(day: 31)).displayText,
+        'Monthly on the last day',
+      );
+      expect(
+        _rule(MonthlyByDay(day: 30)).displayText,
+        'Monthly on the 30th, using the last day in shorter months',
+      );
+      expect(
+        _rule(MonthlyByDay(day: 29)).displayText,
+        'Monthly on the 29th, using the last day in shorter months',
+      );
+      expect(
+        _rule(MonthlyByDay(day: 31, missingDay: MissingDay.skip)).displayText,
+        'Monthly on the 31st, skipping months without that day',
+      );
+      expect(
+        _rule(
+          MonthlyByDay(interval: 3, day: 29, missingDay: MissingDay.skip),
+        ).displayText,
+        'Every 3 months on the 29th, skipping months without that day',
+      );
+    });
+
+    test('monthly by weekday', () {
+      expect(
+        _rule(
+          MonthlyByWeekday(position: WeekPosition.second, weekday: 2),
+        ).displayText,
+        'Monthly on the 2nd Tuesday',
+      );
+      expect(
+        _rule(
+          MonthlyByWeekday(
+            interval: 2,
+            position: WeekPosition.last,
+            weekday: 5,
+          ),
+        ).displayText,
+        'Every 2 months on the last Friday',
+      );
+    });
+
+    test('yearly', () {
+      expect(_rule(Yearly(month: 6, day: 15)).displayText, 'Yearly on June 15');
+      expect(
+        _rule(Yearly(interval: 2, month: 6, day: 15)).displayText,
+        'Every 2 years on June 15',
+      );
+      expect(
+        _rule(Yearly(month: 2, day: 29)).displayText,
+        'Yearly on February 29, using Feb 28 in non-leap years',
+      );
+      expect(
+        _rule(
+          Yearly(month: 2, day: 29, missingDay: MissingDay.skip),
+        ).displayText,
+        'Yearly on February 29, skipping non-leap years',
+      );
+      expect(
+        _rule(
+          Yearly(month: 2, day: 28, missingDay: MissingDay.skip),
+        ).displayText,
+        'Yearly on February 28',
+      );
+    });
+
+    test('end suffixes', () {
+      expect(
+        _rule(Daily(), end: EndsOnDate(DateTime(2025, 12, 31))).displayText,
+        'Every day · until 12/31/2025',
+      );
+      expect(
+        _rule(Daily(), end: EndsAfterCount(1)).displayText,
+        'Every day · for 1 time',
+      );
+    });
+
+    test('includeStartDate suffix', () {
+      expect(
+        _rule(Daily(), includeStartDate: true).displayText,
+        'Every day · including start date',
+      );
+      expect(
+        _rule(
+          Weekly(weekdays: [1]),
+          end: EndsAfterCount(5),
+          includeStartDate: true,
+        ).displayText,
+        'Mon · for 5 times · including start date',
+      );
     });
   });
 }

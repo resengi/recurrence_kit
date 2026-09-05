@@ -1,6 +1,6 @@
 # Recurrence Kit
 
-A standalone recurrence rule system for Flutter — data models, a computation engine, and a configurable picker UI widget.
+A standalone recurrence rule system for Flutter — sealed data models, a computation engine, and a configurable picker UI widget.
 
 [![pub package](https://img.shields.io/pub/v/recurrence_kit.svg)](https://pub.dev/packages/recurrence_kit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,16 +14,16 @@ A standalone recurrence rule system for Flutter — data models, a computation e
 
 ## Features
 
-- Immutable `RecurrenceRule` model with full JSON serialization (`toJson` / `fromJson`)
-- Human-readable display text (`"Every 2 weeks: Mon, Fri · for 10 times"`)
-- Support for daily, weekly, monthly (fixed date and relative weekday), and yearly patterns
-- Configurable intervals, day-of-week selection, and end conditions (never, on date, after count)
-- Monthly relative weekday mode (`"2nd Tuesday"`, `"last Friday"`)
-- Short-month and leap-day fallback handling
-- Pure, stateless computation engine with direct-jump arithmetic (no day-by-day iteration)
+- Immutable `RecurrenceRule` built from sealed pattern and end variants, so a rule cannot be in an invalid state
+- Daily, weekly, monthly by day, monthly by weekday (`"2nd Tuesday"`, `"last Friday"`), and yearly patterns with intervals
+- Explicit missing-day policy for days 29–31 and February 29: use the month's last day, or skip
+- End conditions: never, on a date, after a count
+- Optional inclusion of the start date as the first occurrence
+- Pure, stateless engine computing single occurrences and the k-th occurrence by calendar arithmetic; enumeration is linear in the dates returned
 - DST-safe date calculations
-- Fully themeable picker widget via a single `RecurrencePickerTheme` config class
-- Optional `maxCount` safety cap for user-controlled occurrence counts
+- Strict JSON serialization that round-trips every rule and ignores unknown keys
+- Human-readable display text (`"Every 2 weeks: Mon, Fri · for 10 times"`)
+- Fully themeable, controlled picker widget
 - Single dependency beyond Flutter (`intl`)
 
 ## Installation
@@ -32,7 +32,7 @@ Add the package to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  recurrence_kit: ^0.1.0
+  recurrence_kit: ^0.2.0
 ```
 
 Then run:
@@ -48,17 +48,23 @@ import 'package:recurrence_kit/recurrence_kit.dart';
 
 // Create a rule:
 final rule = RecurrenceRule(
-  type: RecurrenceType.weekly,
-  daysOfWeek: [1, 3, 5],
+  pattern: Weekly(weekdays: [DateTime.monday, DateTime.wednesday, DateTime.friday]),
+  end: EndsAfterCount(10),
 );
 
-// Check if a date matches:
+// Check whether a date is an occurrence:
 RecurrenceEngine.occursOnDate(rule, someDate, startDate);
 
-// Get upcoming occurrences:
-RecurrenceEngine.nextOccurrences(rule, startDate, afterDate, count: 5);
+// Upcoming occurrences:
+RecurrenceEngine.nextOccurrences(rule, startDate, fromDate, count: 5);
 
-// Full picker widget:
+// Boundary queries and windows:
+RecurrenceEngine.nextOccurrenceOnOrAfter(rule, startDate, someDate);
+RecurrenceEngine.previousOccurrenceOnOrBefore(rule, startDate, someDate);
+RecurrenceEngine.occurrencesInRange(rule, startDate, windowStart, windowEnd);
+RecurrenceEngine.lastOccurrence(rule, startDate);
+
+// Picker widget:
 RecurrencePicker(
   rule: rule,
   onChanged: (updated) => setState(() => _rule = updated),
@@ -70,306 +76,287 @@ RecurrencePicker(
 
 ### RecurrenceRule
 
-An immutable description of a repeating schedule. Supports daily, weekly, monthly (fixed date or relative weekday), and yearly patterns with configurable intervals and end conditions.
+A rule is one pattern, one end, and an `includeStartDate` flag:
 
 ```dart
-// Every 2 weeks on Monday and Friday, ending after 10 occurrences
-final rule = RecurrenceRule(
-  type: RecurrenceType.weekly,
-  interval: 2,
-  daysOfWeek: [1, 5],
-  endType: RecurrenceEndType.afterCount,
-  endAfterCount: 10,
+RecurrenceRule(
+  pattern: Daily(interval: 3),
+  end: const NeverEnds(),
 );
 
-print(rule.displayText); // "Every 2 weeks: Mon, Fri · for 10 times"
+RecurrenceRule(
+  pattern: MonthlyByDay(day: 31),           // last day of every month
+  end: EndsOnDate(DateTime(2025, 12, 31)),
+);
+
+RecurrenceRule(
+  pattern: MonthlyByWeekday(position: WeekPosition.second, weekday: DateTime.tuesday),
+  end: EndsAfterCount(12),
+);
+
+RecurrenceRule(
+  pattern: Yearly(month: 2, day: 29, missingDay: MissingDay.skip), // leap years only
+  end: const NeverEnds(),
+  includeStartDate: true,
+);
 ```
 
-#### Monthly Rules
+Every constructor validates its arguments and throws `ArgumentError` for values outside the documented ranges; see [Semantics](#semantics) rule 2.
 
-Monthly supports two modes. Fixed date mode repeats on a specific day of the month, with automatic fallback for shorter months:
+#### Missing days
+
+`MonthlyByDay` with a day of 29–31 and `Yearly` on February 29 target a day that some months lack. `missingDay` decides what happens then:
 
 ```dart
-// Every month on the 31st (falls back to last day in shorter months)
-RecurrenceRule(
-  type: RecurrenceType.monthly,
-  monthDay: 31,
-)
+MonthlyByDay(day: 31)                              // Feb 28 (or 29), Apr 30, ... : useLastDay
+MonthlyByDay(day: 31, missingDay: MissingDay.skip) // only 31-day months
+Yearly(month: 2, day: 29)                          // Feb 28 in non-leap years
+Yearly(month: 2, day: 29, missingDay: MissingDay.skip) // leap years only
 ```
 
-Relative weekday mode repeats on the Nth occurrence of a weekday:
+A `skip` rule can have no occurrences at all — every 12 months on the 30th from a February start, for instance. The engine determines this by arithmetic and every query returns null or empty.
+
+#### Display text
 
 ```dart
-// Every month on the 2nd Tuesday
-RecurrenceRule(
-  type: RecurrenceType.monthly,
-  weekOfMonth: 2,
-  dayOfWeek: 2,
-)
-
-// Every month on the last Friday
-RecurrenceRule(
-  type: RecurrenceType.monthly,
-  weekOfMonth: 5, // 5 = last
-  dayOfWeek: 5,
-)
+rule.displayText; // "Every 2 weeks: Mon, Fri · for 10 times"
 ```
 
 #### Serialization
 
-`toJson` and `fromJson` produce and consume a plain `Map<String, dynamic>`, suitable for JSON storage or Drift `TypeConverter` integration:
-
 ```dart
-final json = rule.toJson();
+final json = rule.toJson();            // Map<String, dynamic>
 final restored = RecurrenceRule.fromJson(json);
-assert(rule == restored);
 ```
 
-A Drift `TypeConverter` is just a few lines in your app code:
-
-```dart
-class RecurrenceRuleConverter extends TypeConverter<RecurrenceRule, String> {
-  const RecurrenceRuleConverter();
-
-  @override
-  RecurrenceRule fromSql(String fromDb) =>
-      RecurrenceRule.fromJson(jsonDecode(fromDb) as Map<String, dynamic>);
-
-  @override
-  String toSql(RecurrenceRule value) => jsonEncode(value.toJson());
-}
-```
+The shape is documented in [Semantics](#semantics) rules 11–13. `fromJson` throws `FormatException` for anything it cannot read.
 
 #### copyWith
 
-All fields support override via `copyWith`. Boolean `clear*` flags reset individual fields to null:
-
 ```dart
-final updated = rule.copyWith(interval: 3);
-final cleared = rule.copyWith(clearDaysOfWeek: true);
+final biweekly = rule.copyWith(pattern: (rule.pattern as Weekly).copyWith(interval: 2));
+final unbounded = rule.copyWith(end: const NeverEnds());
 ```
+
+Pattern variants have `copyWith` for their own fields; end variants are reconstructed.
 
 ### RecurrenceEngine
 
-Pure, stateless computation — all methods are static with no Flutter dependencies.
-
-#### Checking a Date
+All engine methods are static and pure. A schedule is a rule paired with a start date. Inputs are reduced to calendar dates; results are local `DateTime(year, month, day)` values.
 
 ```dart
-final matches = RecurrenceEngine.occursOnDate(rule, date, startDate);
+final start = DateTime(2025, 1, 6); // a Monday
+final rule = RecurrenceRule(
+  pattern: Weekly(weekdays: [DateTime.monday, DateTime.friday]),
+  end: const NeverEnds(),
+);
+
+RecurrenceEngine.occursOnDate(rule, DateTime(2025, 1, 10), start);            // true
+RecurrenceEngine.nextOccurrenceOnOrAfter(rule, start, DateTime(2025, 1, 8));   // 2025-01-10
+RecurrenceEngine.previousOccurrenceOnOrBefore(rule, start, DateTime(2025, 1, 8)); // 2025-01-06
+RecurrenceEngine.occurrencesInRange(rule, start, DateTime(2025, 1, 6), DateTime(2025, 1, 17));
+// [2025-01-06, 2025-01-10, 2025-01-13, 2025-01-17]
+RecurrenceEngine.nextOccurrences(rule, start, DateTime(2025, 1, 8), count: 3);
+// [2025-01-10, 2025-01-13, 2025-01-17]
+RecurrenceEngine.lastOccurrence(rule, start); // null: the sequence is unbounded
 ```
 
-All dates are normalized to midnight internally. The recurrence boundary is read from `rule.endDate`.
-
-#### Getting Upcoming Occurrences
+`lastOccurrence` is the final date of the resulting sequence, or null when that sequence is empty or unbounded:
 
 ```dart
-final upcoming = RecurrenceEngine.nextOccurrences(
-  rule,
-  startDate,
-  afterDate, // exclusive — occurrences start from afterDate + 1
-  count: 5,
+final tenFridays = rule.copyWith(
+  pattern: Weekly(weekdays: [DateTime.friday]),
+  end: EndsAfterCount(10),
 );
-```
-
-Uses direct-jump arithmetic to compute each occurrence in O(1) — no day-by-day iteration regardless of interval size. A yearly rule with `interval: 10` requesting 5 occurrences takes exactly 5 computations, not 18,250.
-
-#### Computing End Dates for "After N" Rules
-
-When `endType == RecurrenceEndType.afterCount`, the picker stores the count but not the concrete end date. Resolve it at save time:
-
-```dart
-final endDate = RecurrenceEngine.computeEndDateFromCount(
-  rule,
-  startDate,
-  rule.endAfterCount!,
-);
-final resolved = rule.copyWith(endDate: endDate);
-```
-
-Use `maxCount` to guard against unreasonably large user input:
-
-```dart
-final endDate = RecurrenceEngine.computeEndDateFromCount(
-  rule, startDate, userCount,
-  maxCount: 1000, // returns null if userCount > 1000
-);
+RecurrenceEngine.lastOccurrence(tenFridays, start); // 2025-03-14
 ```
 
 ### RecurrencePicker
 
-An inline editor widget that builds a `RecurrenceRule` interactively. Provides controls for frequency, interval, day/week/month selection, and end conditions.
+The picker is a controlled widget. It renders the rule you pass and calls `onChanged` with a complete replacement rule for every edit; it keeps no recurrence state of its own, so what you store is what it shows.
 
 ```dart
-RecurrencePicker(
-  rule: _rule,
-  onChanged: (updated) => setState(() => _rule = updated),
-  startDate: DateTime(2025, 1, 15),
-)
+class _EditorState extends State<Editor> {
+  RecurrenceRule _rule = RecurrenceRule(pattern: Daily(), end: const NeverEnds());
+
+  @override
+  Widget build(BuildContext context) {
+    return RecurrencePicker(
+      rule: _rule,
+      onChanged: (updated) => setState(() => _rule = updated),
+      startDate: DateTime.now(),
+    );
+  }
+}
 ```
+
+Entering a mode seeds its values from `startDate` and the theme: Weekly starts on the start date's weekday, Monthly on its day of month, Yearly on its month and day, "After" with `theme.defaultEndAfterCount`, and "On date" with the schedule's first date. `includeStartDate` has no control in the picker; emitted rules preserve whatever value came in.
 
 #### Theming
 
-Pass a `RecurrencePickerTheme` to customize colors, font sizes, spacing, and functional options:
-
 ```dart
 RecurrencePicker(
   rule: _rule,
-  onChanged: (updated) => setState(() => _rule = updated),
+  onChanged: _update,
   startDate: DateTime.now(),
-  theme: RecurrencePickerTheme(
+  theme: const RecurrencePickerTheme(
     accentColor: Colors.indigo,
-    textColor: Colors.white,
-    fontSizeBody: 15.0,
-    spacingM: 16.0,
+    fontSizeBody: 15,
+    defaultEndAfterCount: 5,
   ),
 )
 ```
 
-Use `copyWith` to derive a modified theme from an existing one:
-
-```dart
-final darkTheme = lightTheme.copyWith(
-  textColor: Color(0xFFE0E0E0),
-  accentColor: Color(0xFF81C784),
-);
-```
-
-#### Week Start Day
-
-The day-of-week selector defaults to Sunday-first. Pass `firstDayOfWeek` to change it:
+#### Week start day
 
 ```dart
 RecurrencePicker(
-  rule: _rule,
-  onChanged: (updated) => setState(() => _rule = updated),
-  startDate: DateTime.now(),
-  firstDayOfWeek: DateTime.monday,
+  // ...
+  firstDayOfWeek: DateTime.monday, // display order of the weekday selector
 )
 ```
 
-#### Custom Date Formatting
-
-The end-date display uses `intl`'s `DateFormat.yMMMd()` by default. Override it via the theme:
+#### End-date dialog horizon
 
 ```dart
-RecurrencePickerTheme(
-  dateFormatter: (date) => '${date.day}/${date.month}/${date.year}',
-)
+RecurrencePickerTheme(datePickerLastDate: DateTime(2030, 12, 31))
 ```
 
-## Customization
+The horizon bounds new selections in the "On date" dialog. It defaults to 100 years after the start date, may be set earlier or later, and must not precede the start date. A rule whose end date already lies beyond the horizon stays editable: the dialog extends to that date.
 
-### RecurrenceRule Properties
+#### Custom date formatting
+
+```dart
+RecurrencePickerTheme(dateFormatter: (date) => DateFormat.yMd().format(date))
+```
+
+## Semantics
+
+**Model**
+
+1. A `RecurrenceRule` is one pattern, one end, and an `includeStartDate` flag (default `false`).
+   Patterns: `Daily(interval)`, `Weekly(interval, weekdays)`, `MonthlyByDay(interval, day, missingDay)`, `MonthlyByWeekday(interval, position, weekday)`, `Yearly(interval, month, day, missingDay)`.
+   Ends: `NeverEnds`, `EndsOnDate(date)`, `EndsAfterCount(count)`.
+2. Constructors reject invalid values with `ArgumentError`: interval ≥ 1; weekdays non-empty, each 1–7, stored sorted, unique, unmodifiable; day 1–31; weekday 1–7; month 1–12; a yearly day must exist for its month in some Gregorian year (Feb 29 valid, Feb 30 and Apr 31 not); count ≥ 1. `position` is an enum: first, second, third, fourth, last. `missingDay` is an enum: `useLastDay` (default), `skip`.
+3. Dates are calendar components. Construction keeps the supplied year, month, and day and discards time-of-day and the UTC flag without timezone conversion. Engine inputs and results use local `DateTime(year, month, day)` component construction; Dart's normal local-time normalization applies where that local wall time does not exist.
+4. Equality is structural over every field. `RecurrenceRule.copyWith` replaces `pattern`, `end`, and/or `includeStartDate`; pattern variants have `copyWith` for their own fields; end variants are reconstructed. There are no clear flags. `missingDay` is authored state that persists through day edits, so two rules differing only in it are different rules even when their schedules coincide.
+
+**Schedule**
+
+5. A schedule is (rule, startDate). Interval alignment is anchored to startDate's day, Monday-based week, month, or year. The **base sequence** is: with `includeStartDate` false, the ascending calendar dates on or after startDate that match the pattern; with it true, startDate followed by the ascending dates after startDate that match the pattern.
+6. `missingDay` governs an aligned month that lacks the target day (days 29–31 in shorter months; Feb 29 in non-leap years). `useLastDay` places the match on that month's last day, so monthly day 31 means "last day of the month" and yearly Feb 29 means "last day of February". `skip` produces no match in that month. It has no effect on days that always exist.
+7. A base sequence is empty, exactly startDate (switch on, no later match), or unbounded. Whether a `skip` rule ever matches, and where, is determined by arithmetic on the calendar's fixed cycles (which months of the year the rule visits; for Feb 29, which years of the 400-year leap cycle it visits), never by searching. Examples of rules that never match: every 12 months on the 30th from a February start; Feb 29 every 100 years from a 2001 start.
+8. The end condition transforms the base sequence: `NeverEnds` imposes no end; `EndsOnDate(d)` keeps the occurrences on or before d (a d before startDate therefore yields an empty schedule and is valid); `EndsAfterCount(N)` keeps at most the first N. `lastOccurrence` is the final date of the resulting sequence, or null when that sequence is empty or unbounded. Every query returns null or empty for occurrences that do not exist.
+9. All queries are inclusive on-or-after / on-or-before. `nextOccurrences` takes a required count: 0 returns empty, negative throws `ArgumentError`.
+10. The package defines no date ceiling of its own. A query is supported wherever the `DateTime` values required to evaluate it are representable by Dart. Calendar arithmetic near Dart's range limits may require an adjacent value outside that range, in which case `DateTime` throws `ArgumentError`. Enumeration does not advance beyond the final occurrence it returns. Single-occurrence queries (`occursOnDate`, next, previous, `lastOccurrence`) and the k-th occurrence are computed by arithmetic on codified calendar rules, with no scanning over days, months, or years and no dependence on calendar distance or on k. Enumeration queries (`occurrencesInRange`, `nextOccurrences`) are linear in the number of dates returned. No production code walks the calendar.
+
+**Serialization**
+
+11. Shape:
+
+    | Key | Value |
+    |---|---|
+    | `pattern.kind` | `daily` · `weekly` · `monthlyByDay` · `monthlyByWeekday` · `yearly` |
+    | `pattern.interval` | int (all kinds) |
+    | `pattern.weekdays` | int list (weekly) |
+    | `pattern.day` | int (monthlyByDay, yearly) |
+    | `pattern.missingDay` | `useLastDay` · `skip` (monthlyByDay, yearly) |
+    | `pattern.position` | `first` · `second` · `third` · `fourth` · `last` (monthlyByWeekday) |
+    | `pattern.weekday` | int (monthlyByWeekday) |
+    | `pattern.month` | int (yearly) |
+    | `end.kind` | `never` · `onDate` · `afterCount` |
+    | `end.date` | `{year, month, day}` ints (onDate) |
+    | `end.count` | int (afterCount) |
+    | `includeStartDate` | bool (top level) |
+
+    `toJson` writes every key that belongs to the rule's kinds, weekdays sorted.
+12. `fromJson` reads exactly the fields for the declared kind and ignores any other key at any level. It throws `FormatException` for an unknown kind, a missing field, a wrong type, an out-of-range value, or a date object that is not a real date. Integer fields accept any finite number without a fractional part; a fractional or non-finite number is a wrong type. Weekday order and duplicates are canonicalized on read. Every constructible rule round-trips; keys the package does not define are not preserved through the model. Because older readers ignore keys they do not know, a key added in a later version must be one that is correct to ignore; a change that alters behavior is introduced as a new `kind`.
+13. There is no reader for the pre-0.2.0 flat shape. The format change is listed in the CHANGELOG as a breaking change.
+
+**Picker**
+
+14. `RecurrencePicker` is a controlled widget that owns no recurrence state. It renders `rule` by switching on the variant types; every accepted edit builds one complete replacement rule from the rule current at that moment and passes it to `onChanged`; interactions that make no edit (a cancelled dialog, a refused last-weekday removal, tapping the active chip) emit nothing. If the parent does not supply the new rule, nothing changes. `includeStartDate` is programmatic-only in the picker: it has no control, every emitted rule preserves the incoming value, and the picker doc says so.
+15. Entering a mode seeds its variant from the current `startDate` and theme, carrying the current interval: weekly → start weekday; monthly → start day with `useLastDay`, or start position and weekday; yearly → start month and day with `useLastDay`; After → `theme.defaultEndAfterCount`; On date → the first date of the base sequence, or startDate when the base sequence is empty.
+16. A missing-day toggle (use last day / skip) is shown for a monthly-by-day rule whose day is 29–31 and for a yearly rule on Feb 29, and nowhere else. Its labels, the monthly "Last day" segment label, and the helper text under the day stepper reflect the current `missingDay`. Yearly has no other controls.
+17. The date dialog's selectable range runs from startDate to the later of the horizon (`theme.datePickerLastDate`, which may be earlier or later than the default 100 years after startDate, but not earlier than startDate) and the rule's existing end date; its cursor is the existing end date clamped into that range (so a valid end before startDate opens on startDate). Opening or cancelling the dialog never changes the rule. A picked date is applied to the then-current `widget.rule` after a `mounted` check. The horizon restricts selection only.
+18. At build, the picker rejects with `ArgumentError`: `defaultEndAfterCount` < 1, a horizon before startDate, `firstDayOfWeek` outside 1–7. `firstDayOfWeek` is display order only; default Sunday. The theme is a passive `const` value.
+
+## API Reference
+
+### RecurrenceRule
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `type` | `RecurrenceType` | required | Frequency: `daily`, `weekly`, `monthly`, `yearly` |
-| `interval` | `int` | `1` | Every N days/weeks/months/years |
-| `daysOfWeek` | `List<int>?` | `null` | Weekly: selected ISO weekdays (1=Mon … 7=Sun) |
-| `monthDay` | `int?` | `null` | Monthly (fixed) / yearly: day of month (1–31) |
-| `weekOfMonth` | `int?` | `null` | Monthly (relative): which week (1–4, or 5=last) |
-| `dayOfWeek` | `int?` | `null` | Monthly (relative): ISO weekday (1=Mon … 7=Sun) |
-| `monthOfYear` | `int?` | `null` | Yearly: month (1–12) |
-| `endType` | `RecurrenceEndType` | `.never` | How the recurrence ends: `never`, `onDate`, `afterCount` |
-| `endDate` | `DateTime?` | `null` | The date after which no more occurrences are generated |
-| `endAfterCount` | `int?` | `null` | Display-only: original count for "after N" rules |
+| `pattern` | `RecurrencePattern` | required | `Daily`, `Weekly`, `MonthlyByDay`, `MonthlyByWeekday`, or `Yearly` |
+| `end` | `RecurrenceEnd` | required | `NeverEnds`, `EndsOnDate`, or `EndsAfterCount` |
+| `includeStartDate` | `bool` | `false` | Whether the start date is occurrence #1 even when it does not match the pattern |
 
-### RecurrencePicker Properties
+### Patterns
+
+| Variant | Fields |
+|---------|--------|
+| `Daily` | `interval` |
+| `Weekly` | `interval`, `weekdays` (sorted ISO weekdays, 1 = Mon … 7 = Sun) |
+| `MonthlyByDay` | `interval`, `day` (1–31), `missingDay` |
+| `MonthlyByWeekday` | `interval`, `position` (`WeekPosition`), `weekday` (1–7) |
+| `Yearly` | `interval`, `month` (1–12), `day`, `missingDay` |
+
+### RecurrencePicker
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `rule` | `RecurrenceRule` | required | Current recurrence rule |
-| `onChanged` | `ValueChanged<RecurrenceRule>` | required | Fires on every user edit |
-| `startDate` | `DateTime` | required | Start date — used to derive monthly/yearly defaults |
-| `firstDayOfWeek` | `int` | `DateTime.sunday` | Week start for the day-of-week selector |
+| `rule` | `RecurrenceRule` | required | The rule to render |
+| `onChanged` | `ValueChanged<RecurrenceRule>` | required | Receives the replacement rule for every accepted edit |
+| `startDate` | `DateTime` | required | Seeds mode defaults and bounds the end-date dialog |
+| `firstDayOfWeek` | `int` | `DateTime.sunday` | Display order of the weekday selector |
 | `theme` | `RecurrencePickerTheme` | `const RecurrencePickerTheme()` | Visual and functional configuration |
 
-### RecurrencePickerTheme Properties
+### RecurrencePickerTheme
 
 #### Colors
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `textColor` | `Color` | `Color(0xFF1A1A1A)` | Primary text for labels and values |
-| `secondaryTextColor` | `Color` | `Color(0xFF6B6B6B)` | Hints, helper text, de-emphasized content |
-| `accentColor` | `Color` | `Color(0xFF5B6ABF)` | Selected chips, stepper buttons, date icon |
-| `borderColor` | `Color` | `Color(0xFFD0D0D0)` | Unselected chips and day-of-week circles |
+| Property | Default | Used for |
+|----------|---------|----------|
+| `textColor` | `#1A1A1A` | Labels and values |
+| `secondaryTextColor` | `#6B6B6B` | Hints and helper text |
+| `accentColor` | `#5B6ABF` | Selected chips, radio indicators, stepper buttons, date icon |
+| `borderColor` | `#D0D0D0` | Unselected chips and day-of-week circles |
 
-#### Font Sizes
+#### Font sizes
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `fontSizeBody` | `double` | `14.0` | Labels: "Every", "On days", "Ends", dropdowns |
-| `fontSizeMedium` | `double` | `16.0` | Stepper counter values |
-| `fontSizeCompact` | `double` | `13.0` | Chip labels and day-of-week letters |
-| `fontSizeSmall` | `double` | `12.0` | Helper notes and segmented button labels |
+| Property | Default | Used for |
+|----------|---------|----------|
+| `fontSizeBody` | `14.0` | Labels and dropdown items |
+| `fontSizeMedium` | `16.0` | Stepper values |
+| `fontSizeCompact` | `13.0` | Chip labels and day-of-week letters |
+| `fontSizeSmall` | `12.0` | Helper text and segmented button labels |
 
 #### Spacing
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `spacingXS` | `double` | `4.0` | Between stepper and helper note |
-| `spacingS` | `double` | `8.0` | Between label and control |
-| `spacingM` | `double` | `12.0` | Between major sections |
-| `spacingL` | `double` | `16.0` | Before end-condition section |
+| Property | Default | Used for |
+|----------|---------|----------|
+| `spacingXS` | `4.0` | Stepper row to helper note |
+| `spacingS` | `8.0` | Label to control |
+| `spacingM` | `12.0` | Between sections |
+| `spacingL` | `16.0` | Before the end-condition section |
 
 #### Functional
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `datePickerEndYear` | `int` | `2040` | Last year in the end-date picker |
-| `dateFormatter` | `String Function(DateTime)?` | `null` | Custom end-date display (null = `DateFormat.yMMMd()`) |
-
-## How It Works
-
-1. **Immutable model** — `RecurrenceRule` encodes the full recurrence pattern as value types with `==`, `hashCode`, and `copyWith`. Serialization round-trips cleanly via `toJson` / `fromJson`.
-
-2. **Direct-jump engine** — `nextOccurrences` and `computeEndDateFromCount` compute each occurrence in O(1) by jumping directly to the next matching date using modular arithmetic (daily), week-aligned scanning (weekly), month-offset arithmetic (monthly), or year-offset arithmetic (yearly). No day-by-day iteration.
-
-3. **DST safety** — All day-count and week-count calculations use a UTC conversion helper to avoid `DateTime.difference().inDays` truncation errors caused by daylight saving transitions. Monday-of-week computations use component math rather than `Duration` subtraction.
-
-4. **Predicate for external use** — `occursOnDate` is a standalone check for "does date X match rule Y?" — useful when iterating a visible date range (calendars, planners) rather than computing N upcoming dates.
-
-5. **Decoupled theme** — `RecurrencePickerTheme` maps 1:1 to visual elements with no inherited theme lookups. Every field has a sensible default, so consumers can override selectively or pass `const RecurrencePickerTheme()` for zero-config.
+| `datePickerLastDate` | `DateTime?` | `null` | Horizon of the "On date" dialog; null = 100 years after `startDate`. Must not precede `startDate`. |
+| `defaultEndAfterCount` | `int` | `10` | Count seeded when "After" is selected; must be ≥ 1 |
+| `dateFormatter` | `String Function(DateTime)?` | `null` | End-date display format (null = `DateFormat.yMMMd()`) |
 
 ## Best Practices
 
-**Resolve "after N" end dates at save time**, not in `build`. The picker outputs `endAfterCount` but the engine uses `endDate` as the boundary. Call `computeEndDateFromCount` once when saving, not on every frame:
+**Store the rule and the start date together.** A rule alone is not a schedule; every engine query takes both.
 
-```dart
-void _save() {
-  var rule = _rule;
-  if (rule.endType == RecurrenceEndType.afterCount && rule.endAfterCount != null) {
-    rule = rule.copyWith(
-      endDate: RecurrenceEngine.computeEndDateFromCount(
-        rule, _startDate, rule.endAfterCount!,
-      ),
-    );
-  }
-  database.saveRule(rule);
-}
-```
+**Keep engine calls out of `build`.** Cache results in state and recompute when the rule or start date changes.
 
-**Use `maxCount` for user-facing input** to guard against unreasonably large occurrence counts:
+**Use `occurrencesInRange` for calendar views.** Ask for the visible window directly; cost scales with the number of dates returned, not with the window length. Use `nextOccurrences` for the next N dates without a bounded range.
 
-```dart
-RecurrenceEngine.computeEndDateFromCount(rule, start, userCount, maxCount: 1000);
-```
-
-**Pass `afterDate` one day before start** when you want the first occurrence (possibly today) included:
-
-```dart
-final upcoming = RecurrenceEngine.nextOccurrences(
-  rule, startDate,
-  startDate.subtract(const Duration(days: 1)),
-  count: 5,
-);
-```
-
-**Keep engine calls out of `build`** — cache results in state and recompute only when the rule changes. This avoids unnecessary computation on every frame rebuild.
-
-**Use `occursOnDate` for calendar ranges** — when materializing a planner or calendar view, iterate your visible date range and check each day with `occursOnDate`. This is efficient for bounded ranges (7–31 days). Use `nextOccurrences` when you need the next N dates without a bounded range.
+**Use `lastOccurrence` to display when a schedule ends.** It is the authoritative final date of the resulting sequence and null when that sequence is empty or unbounded.
 
 ## License
 

@@ -36,3 +36,7 @@ example/.dart_tool/
 example/.metadata
 example/.gitignore
 example/pubspec.lock
+
+# Benchmarking
+
+benchmark/

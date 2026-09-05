@@ -1,14 +1,16 @@
 import 'dart:ui' show Color;
 
-/// Visual and functional configuration for [RecurrencePicker].
+/// Visual and functional configuration for `RecurrencePicker`.
 ///
 /// Controls colors, font sizes, spacing, and functional options like the
-/// date picker range and date formatting. Every field maps 1:1 to a
-/// specific visual element in the picker — there are no inherited or
-/// implicit theme lookups.
+/// date picker horizon and date formatting. Every field maps to specific
+/// elements of the picker; other visual details use the picker's fixed
+/// styling or the ambient Material theme. The theme itself performs no
+/// validation: the picker rejects a configuration it cannot honor when
+/// it builds.
 ///
-/// All fields have sensible defaults. Pass `const RecurrencePickerTheme()`
-/// for a zero-config experience, or override selectively:
+/// All fields have defaults. Pass `const RecurrencePickerTheme()` for a
+/// zero-config experience, or override selectively:
 ///
 /// ```dart
 /// RecurrencePicker(
@@ -25,9 +27,6 @@ import 'dart:ui' show Color;
 /// Use [copyWith] to derive a modified theme from an existing one.
 class RecurrencePickerTheme {
   /// Creates a picker theme configuration.
-  ///
-  /// All parameters are optional and fall back to neutral defaults that
-  /// work well across both light and dark backgrounds.
   const RecurrencePickerTheme({
     this.textColor = const Color(0xFF1A1A1A),
     this.secondaryTextColor = const Color(0xFF6B6B6B),
@@ -41,7 +40,8 @@ class RecurrencePickerTheme {
     this.spacingS = 8.0,
     this.spacingM = 12.0,
     this.spacingL = 16.0,
-    this.datePickerEndYear = 2040,
+    this.datePickerLastDate,
+    this.defaultEndAfterCount = 10,
     this.dateFormatter,
   });
 
@@ -92,17 +92,38 @@ class RecurrencePickerTheme {
 
   // ── Functional ───────────────────────────────────────────────────────────
 
-  /// The last year offered in the "end on date" date picker.
-  final int datePickerEndYear;
+  /// The editing horizon of the "On date" dialog: the latest date offered
+  /// for a new selection. Null means 100 years after the picker's start
+  /// date, on the same month and day (or the month's last day when it is
+  /// shorter). Any calendar date on or after the start date is accepted,
+  /// earlier or later than that default; the picker throws an
+  /// [ArgumentError] on build for a horizon before its start date.
+  ///
+  /// A UI policy only. When a rule's existing end date lies later than the
+  /// horizon, the dialog extends to that date so the rule stays editable,
+  /// and the dates in between become selectable as well. The horizon never
+  /// alters a rule.
+  final DateTime? datePickerLastDate;
+
+  /// The occurrence count a rule receives when the user selects the
+  /// "After" end mode. Must be at least 1; the picker throws an
+  /// [ArgumentError] on build otherwise.
+  final int defaultEndAfterCount;
 
   /// Optional custom date formatter for the end-date display.
   ///
-  /// When null, the picker uses `intl`'s `DateFormat.yMMMd()` which
+  /// When null, the picker uses `intl`'s `DateFormat.yMMMd()`, which
   /// produces output like "Jan 15, 2025".
   final String Function(DateTime)? dateFormatter;
 
   // ── copyWith ─────────────────────────────────────────────────────────────
 
+  /// Returns a copy with the given fields replaced.
+  ///
+  /// [datePickerLastDate] and [dateFormatter] are nullable, and null means
+  /// their defaults, so passing null retains the current value; set
+  /// [clearDatePickerLastDate] or [clearDateFormatter] to restore the
+  /// default explicitly.
   RecurrencePickerTheme copyWith({
     Color? textColor,
     Color? secondaryTextColor,
@@ -116,8 +137,11 @@ class RecurrencePickerTheme {
     double? spacingS,
     double? spacingM,
     double? spacingL,
-    int? datePickerEndYear,
+    DateTime? datePickerLastDate,
+    bool clearDatePickerLastDate = false,
+    int? defaultEndAfterCount,
     String Function(DateTime)? dateFormatter,
+    bool clearDateFormatter = false,
   }) {
     return RecurrencePickerTheme(
       textColor: textColor ?? this.textColor,
@@ -132,8 +156,13 @@ class RecurrencePickerTheme {
       spacingS: spacingS ?? this.spacingS,
       spacingM: spacingM ?? this.spacingM,
       spacingL: spacingL ?? this.spacingL,
-      datePickerEndYear: datePickerEndYear ?? this.datePickerEndYear,
-      dateFormatter: dateFormatter ?? this.dateFormatter,
+      datePickerLastDate: clearDatePickerLastDate
+          ? null
+          : (datePickerLastDate ?? this.datePickerLastDate),
+      defaultEndAfterCount: defaultEndAfterCount ?? this.defaultEndAfterCount,
+      dateFormatter: clearDateFormatter
+          ? null
+          : (dateFormatter ?? this.dateFormatter),
     );
   }
 }
