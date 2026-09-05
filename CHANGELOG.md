@@ -2,6 +2,33 @@
 
 
 
+## 2026-09-05
+
+### Changes
+
+---
+
+Packages with breaking changes:
+
+ - [`recurrence_kit` - `v0.2.0`](#recurrence_kit---v020)
+
+Packages with other changes:
+
+ - There are no other changes in this release.
+
+---
+
+#### `recurrence_kit` - `v0.2.0`
+
+ - **BREAKING** **FEAT**: Major refactor to add some new features and fix bugs ([#2](https://github.com/resengi/recurrence_kit/issues/2)). ([da3ded41](https://github.com/resengi/recurrence_kit/commit/da3ded41fb6e75bc53a795928abbe1b1bcd4763a))
+
+## 0.2.0
+
+> Note: This release has breaking changes.
+
+ - **BREAKING** **FEAT**: Major refactor to add some new features and fix bugs ([#2](https://github.com/resengi/recurrence_kit/issues/2)). ([da3ded41](https://github.com/resengi/recurrence_kit/commit/da3ded41fb6e75bc53a795928abbe1b1bcd4763a))
+
+
 ## 2026-04-02
 
 ### Changes
@@ -43,5 +70,7 @@ Packages with other changes:
 - DST-safe date calculations throughout the engine.
 - Monthly relative weekday support (`"2nd Tuesday"`, `"last Friday"`).
 - Short-month and leap-day fallback handling.alculations throughout the engine.
+- Monthly relative weekday support (`"2nd Tuesday"`, `"last Friday"`).
+- Short-month and leap-day fallback handling.lback handling.alculations throughout the engine.
 - Monthly relative weekday support (`"2nd Tuesday"`, `"last Friday"`).
 - Short-month and leap-day fallback handling.
